@@ -163,6 +163,42 @@ def decrypt_secret(conn, name: str) -> bytes:
         )
 
 
+def host_agent_request(payload, timeout=120):
+    with socket.socket(
+        socket.AF_UNIX,
+        socket.SOCK_STREAM,
+    ) as sock:
+        sock.settimeout(timeout)
+        sock.connect("/run/ai-platform/agent.sock")
+
+        sock.sendall(
+            json.dumps(
+                payload,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+
+        data = b""
+
+        while not data.endswith(b"\n"):
+            chunk = sock.recv(4096)
+
+            if not chunk:
+                raise RuntimeError(
+                    "host agent closed connection"
+                )
+
+            data += chunk
+
+            if len(data) > 65536:
+                raise RuntimeError(
+                    "host agent response too large"
+                )
+
+    return json.loads(data.decode("utf-8"))
+
+
 def host_agent_ping():
     try:
         with socket.socket(
@@ -334,6 +370,45 @@ def admin(request: Request):
                 }
                 for row in cur.fetchall()
             ]
+            cur.execute(
+                """
+                SELECT
+                    uc.id,
+                    u.username,
+                    uc.connector_type,
+                    uc.node_name,
+                    uc.state_path,
+                    uc.status,
+                    uc.address,
+                    uc.last_error,
+                    uc.updated_at
+                FROM user_connectors uc
+                JOIN users u
+                  ON u.id = uc.user_id
+                ORDER BY u.username, uc.connector_type
+                """
+            )
+
+            connectors = [
+                {
+                    "id": row[0],
+                    "username": row[1],
+                    "connector_type": row[2],
+                    "node_name": row[3],
+                    "state_path": row[4],
+                    "status": row[5],
+                    "address": row[6],
+                    "last_error": row[7],
+                    "updated_at": row[8],
+                }
+                for row in cur.fetchall()
+            ]
+
+            for connector in connectors:
+                connector["csrf"] = csrf_token(
+                    identity["login"],
+                    f"connector-provision:{connector['id']}",
+                )
 
     response = templates.TemplateResponse(
         request=request,
@@ -342,6 +417,7 @@ def admin(request: Request):
             "migrations": migrations,
             "secrets": secrets,
             "identity": identity,
+            "connectors": connectors,
             "secret_csrf": csrf_token(
                 identity["login"],
                 "secret-set:tailscale.provisioning",
@@ -520,3 +596,150 @@ def check_tailscale_secret(request: Request):
         "secret": "tailscale.provisioning",
         "status": "decrypt-ok",
     }
+
+
+@app.post("/admin/connectors/{connector_id}/provision")
+async def provision_connector(
+    connector_id: int,
+    request: Request,
+):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        form = parse_qs(
+            (await request.body()).decode("utf-8")
+        )
+
+        supplied_csrf = form.get("csrf", [""])[0]
+
+        expected_csrf = csrf_token(
+            identity["login"],
+            f"connector-provision:{connector_id}",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    connector_type,
+                    node_name,
+                    state_path,
+                    enabled
+                FROM user_connectors
+                WHERE id = %s
+                """,
+                (connector_id,),
+            )
+
+            row = cur.fetchone()
+
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail="Connector not found",
+            )
+
+        connector_type, node_name, state_path, enabled = row
+
+        if not enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="Connector is disabled",
+            )
+
+        if connector_type != "tailscale":
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported connector type",
+            )
+
+        auth_key = decrypt_secret(
+            conn,
+            "tailscale.provisioning",
+        ).decode("utf-8")
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE user_connectors
+                SET status = 'provisioning',
+                    last_error = NULL,
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (connector_id,),
+            )
+
+        conn.commit()
+
+    try:
+        result = host_agent_request(
+            {
+                "op": "tailscale_connector_provision",
+                "connector_id": connector_id,
+                "node_name": node_name,
+                "state_path": state_path,
+                "auth_key": auth_key,
+            },
+            timeout=120,
+        )
+
+        if not result.get("ok"):
+            raise RuntimeError(
+                result.get("error")
+                or "connector provisioning failed"
+            )
+
+        with db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE user_connectors
+                    SET status = 'running',
+                        address = %s,
+                        last_seen_at = now(),
+                        last_error = NULL,
+                        updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (
+                        result.get("address"),
+                        connector_id,
+                    ),
+                )
+
+    except Exception as exc:
+        with db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE user_connectors
+                    SET status = 'failed',
+                        last_error = %s,
+                        updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (
+                        str(exc)[:2000],
+                        connector_id,
+                    ),
+                )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Connector provisioning failed",
+        )
+
+    return RedirectResponse(
+        url="/admin",
+        status_code=303,
+    )

@@ -78,6 +78,58 @@ Signed in as:
     </tr>
 </table>
 
+<h2>Connectors</h2>
+
+{% if connectors %}
+<table>
+    <thead>
+        <tr>
+            <th>User</th>
+            <th>Type</th>
+            <th>Node</th>
+            <th>Status</th>
+            <th>Address</th>
+            <th>Action</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for connector in connectors %}
+        <tr>
+            <td>{{ connector.username }}</td>
+            <td>{{ connector.connector_type }}</td>
+            <td>{{ connector.node_name }}</td>
+            <td>{{ connector.status }}</td>
+            <td>{{ connector.address or "-" }}</td>
+            <td>
+                <form
+                    method="post"
+                    action="/admin/connectors/{{ connector.id }}/provision"
+                >
+                    <input
+                        type="hidden"
+                        name="csrf"
+                        value="{{ connector.csrf }}"
+                    >
+                    <button type="submit">Provision</button>
+                </form>
+            </td>
+        </tr>
+
+        {% if connector.last_error %}
+        <tr>
+            <td colspan="6">
+                Error: {{ connector.last_error }}
+            </td>
+        </tr>
+        {% endif %}
+
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No connectors configured.</p>
+{% endif %}
+
 <h2>Secrets</h2>
 
 {% if secrets %}
