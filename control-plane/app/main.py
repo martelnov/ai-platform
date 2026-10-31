@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 import psycopg
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -20,6 +21,9 @@ templates = Jinja2Templates(
     directory="/app/app/templates",
 )
 
+SECRET_ALGORITHM = "aes-256-gcm"
+SECRET_KEY_VERSION = 1
+
 
 def read_secret_file(env_name: str) -> str:
     path = os.environ.get(env_name)
@@ -30,16 +34,16 @@ def read_secret_file(env_name: str) -> str:
     return Path(path).read_text().strip()
 
 
-def read_binary_secret_file(env_name: str) -> bytes:
-    path = os.environ.get(env_name)
+def master_key() -> bytes:
+    path = os.environ.get("MASTER_KEY_FILE")
 
     if not path:
-        raise RuntimeError(f"{env_name} is not configured")
+        raise RuntimeError("MASTER_KEY_FILE is not configured")
 
     value = Path(path).read_bytes()
 
     if len(value) != 32:
-        raise RuntimeError(f"{env_name} must contain exactly 32 bytes")
+        raise RuntimeError("master key must be exactly 32 bytes")
 
     return value
 
@@ -81,14 +85,69 @@ def tailscale_identity(request: Request):
     }
 
 
-def bootstrap_csrf(login: str) -> str:
-    key = read_binary_secret_file("MASTER_KEY_FILE")
-
+def csrf_token(login: str, action: str) -> str:
     return hmac.new(
-        key,
-        f"admin-bootstrap:{login}".encode("utf-8"),
+        master_key(),
+        f"{action}:{login}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
+
+
+def secret_aad(name: str) -> bytes:
+    return (
+        f"ai-platform-secret:v{SECRET_KEY_VERSION}:{name}"
+    ).encode("utf-8")
+
+
+def encrypt_secret(name: str, plaintext: str):
+    nonce = os.urandom(12)
+
+    ciphertext = AESGCM(master_key()).encrypt(
+        nonce,
+        plaintext.encode("utf-8"),
+        secret_aad(name),
+    )
+
+    return nonce, ciphertext
+
+
+def require_admin(request: Request, conn):
+    identity = tailscale_identity(request)
+
+    if not identity["login"]:
+        raise HTTPException(
+            status_code=401,
+            detail="Tailscale identity required",
+        )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, enabled
+            FROM platform_admins
+            WHERE tailscale_login = %s
+            """,
+            (identity["login"],),
+        )
+
+        row = cur.fetchone()
+
+        if not row or not row[1]:
+            raise HTTPException(
+                status_code=403,
+                detail="Administrator access required",
+            )
+
+        cur.execute(
+            """
+            UPDATE platform_admins
+            SET last_seen_at = now()
+            WHERE id = %s
+            """,
+            (row[0],),
+        )
+
+    return identity
 
 
 @app.get("/health")
@@ -128,45 +187,22 @@ def admin(request: Request):
             )
             admin_count = cur.fetchone()[0]
 
-            if admin_count == 0:
-                return templates.TemplateResponse(
-                    request=request,
-                    name="bootstrap-admin.html",
-                    context={
-                        "identity": identity,
-                        "csrf": bootstrap_csrf(
-                            identity["login"]
-                        ),
-                    },
-                )
-
-            cur.execute(
-                """
-                SELECT id, enabled
-                FROM platform_admins
-                WHERE tailscale_login = %s
-                """,
-                (identity["login"],),
+        if admin_count == 0:
+            return templates.TemplateResponse(
+                request=request,
+                name="bootstrap-admin.html",
+                context={
+                    "identity": identity,
+                    "csrf": csrf_token(
+                        identity["login"],
+                        "admin-bootstrap",
+                    ),
+                },
             )
 
-            admin_row = cur.fetchone()
+        identity = require_admin(request, conn)
 
-            if not admin_row or not admin_row[1]:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Administrator access required",
-                )
-
-            cur.execute(
-                """
-                UPDATE platform_admins
-                SET last_seen_at = now(),
-                    updated_at = updated_at
-                WHERE id = %s
-                """,
-                (admin_row[0],),
-            )
-
+        with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT version
@@ -204,15 +240,22 @@ def admin(request: Request):
                 for row in cur.fetchall()
             ]
 
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request=request,
         name="admin.html",
         context={
             "migrations": migrations,
             "secrets": secrets,
             "identity": identity,
+            "secret_csrf": csrf_token(
+                identity["login"],
+                "secret-set:tailscale.provisioning",
+            ),
         },
     )
+
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.post("/admin/bootstrap")
@@ -225,20 +268,18 @@ async def bootstrap_admin(request: Request):
             detail="Tailscale identity required",
         )
 
-    body = await request.body()
+    form = parse_qs(
+        (await request.body()).decode("utf-8")
+    )
 
-    try:
-        form = parse_qs(body.decode("utf-8"))
-        csrf = form.get("csrf", [""])[0]
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid form data",
-        )
+    supplied = form.get("csrf", [""])[0]
 
-    expected = bootstrap_csrf(identity["login"])
+    expected = csrf_token(
+        identity["login"],
+        "admin-bootstrap",
+    )
 
-    if not hmac.compare_digest(csrf, expected):
+    if not hmac.compare_digest(supplied, expected):
         raise HTTPException(
             status_code=403,
             detail="Invalid CSRF token",
@@ -272,6 +313,94 @@ async def bootstrap_admin(request: Request):
                 (
                     identity["login"],
                     identity["name"],
+                ),
+            )
+
+    return RedirectResponse(
+        url="/admin",
+        status_code=303,
+    )
+
+
+@app.post("/admin/secrets/tailscale-provisioning")
+async def set_tailscale_secret(request: Request):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        form = parse_qs(
+            (await request.body()).decode("utf-8")
+        )
+
+        supplied_csrf = form.get("csrf", [""])[0]
+
+        expected_csrf = csrf_token(
+            identity["login"],
+            "secret-set:tailscale.provisioning",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+        value = form.get("value", [""])[0].strip()
+
+        if not value:
+            raise HTTPException(
+                status_code=400,
+                detail="Secret must not be empty",
+            )
+
+        if len(value) > 4096:
+            raise HTTPException(
+                status_code=400,
+                detail="Secret is too long",
+            )
+
+        nonce, ciphertext = encrypt_secret(
+            "tailscale.provisioning",
+            value,
+        )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_secrets (
+                    name,
+                    description,
+                    algorithm,
+                    key_version,
+                    nonce,
+                    ciphertext
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                ON CONFLICT (name)
+                DO UPDATE SET
+                    description = EXCLUDED.description,
+                    algorithm = EXCLUDED.algorithm,
+                    key_version = EXCLUDED.key_version,
+                    nonce = EXCLUDED.nonce,
+                    ciphertext = EXCLUDED.ciphertext,
+                    updated_at = now()
+                """,
+                (
+                    "tailscale.provisioning",
+                    "Tailscale connector provisioning auth key",
+                    SECRET_ALGORITHM,
+                    SECRET_KEY_VERSION,
+                    nonce,
+                    ciphertext,
                 ),
             )
 

@@ -24,8 +24,19 @@
             border-bottom: 1px solid #ccc;
         }
 
-        .ok {
-            font-weight: bold;
+        input {
+            padding: 8px;
+            min-width: 420px;
+        }
+
+        button {
+            padding: 8px 14px;
+        }
+
+        .box {
+            border: 1px solid #ccc;
+            padding: 18px;
+            margin: 20px 0;
         }
     </style>
 </head>
@@ -45,14 +56,12 @@ Signed in as:
 <table>
     <tr>
         <th>Database</th>
-        <td class="ok">OK</td>
+        <td>OK</td>
     </tr>
-
     <tr>
         <th>Database migrations</th>
         <td>{{ migrations }}</td>
     </tr>
-
     <tr>
         <th>Configured secrets</th>
         <td>{{ secrets | length }}</td>
@@ -62,7 +71,6 @@ Signed in as:
 <h2>Secrets</h2>
 
 {% if secrets %}
-
 <table>
     <thead>
         <tr>
@@ -86,12 +94,38 @@ Signed in as:
     {% endfor %}
     </tbody>
 </table>
-
 {% else %}
-
 <p>No secrets configured.</p>
-
 {% endif %}
+
+<div class="box">
+    <h3>Tailscale provisioning key</h3>
+
+    <p>
+        The value is encrypted before being stored in PostgreSQL.
+        Existing values are never displayed.
+    </p>
+
+    <form
+        method="post"
+        action="/admin/secrets/tailscale-provisioning"
+        autocomplete="off"
+    >
+        <input type="hidden" name="csrf" value="{{ secret_csrf }}">
+
+        <input
+            type="password"
+            name="value"
+            required
+            autocomplete="new-password"
+            placeholder="tskey-auth-..."
+        >
+
+        <button type="submit">
+            Save / replace
+        </button>
+    </form>
+</div>
 
 </body>
 </html>
