@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:18-bookworm
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ai_platform
+      POSTGRES_USER: ai_platform
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+
+    secrets:
+      - postgres_password
+
+    volumes:
+      - /AI/data/postgres:/var/lib/postgresql
+
+    networks:
+      - control
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ai_platform -d ai_platform
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+secrets:
+  postgres_password:
+    file: /etc/ai-platform/secrets/postgres_password
+
+networks:
+  control:
+    name: ai-control
+    internal: true
