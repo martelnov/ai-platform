@@ -706,6 +706,8 @@ async def provision_connector(
                     UPDATE user_connectors
                     SET status = 'running',
                         address = %s,
+                        provider_id = %s,
+                        dns_name = %s,
                         last_seen_at = now(),
                         last_error = NULL,
                         updated_at = now()
@@ -713,6 +715,8 @@ async def provision_connector(
                     """,
                     (
                         result.get("address"),
+                        result.get("provider_id"),
+                        result.get("dns_name"),
                         connector_id,
                     ),
                 )
