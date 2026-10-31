@@ -422,9 +422,9 @@ def admin(request: Request):
                 identity["login"],
                 "secret-set:tailscale.provisioning",
             ),
-            "tailscale_api_csrf": csrf_token(
+            "tailscale_oauth_csrf": csrf_token(
                 identity["login"],
-                "secret-set:tailscale.api",
+                "secret-set:tailscale.oauth",
             ),
             "host_agent": host_agent_ping(),
         },
@@ -586,8 +586,8 @@ async def set_tailscale_secret(request: Request):
     )
 
 
-@app.post("/admin/secrets/tailscale-api")
-async def set_tailscale_api_secret(request: Request):
+@app.post("/admin/secrets/tailscale-oauth")
+async def set_tailscale_oauth_secret(request: Request):
     with db_connect() as conn:
         identity = require_admin(request, conn)
 
@@ -599,7 +599,7 @@ async def set_tailscale_api_secret(request: Request):
 
         expected_csrf = csrf_token(
             identity["login"],
-            "secret-set:tailscale.api",
+            "secret-set:tailscale.oauth",
         )
 
         if not hmac.compare_digest(
@@ -611,62 +611,77 @@ async def set_tailscale_api_secret(request: Request):
                 detail="Invalid CSRF token",
             )
 
-        value = form.get("value", [""])[0].strip()
+        client_id = form.get("client_id", [""])[0].strip()
+        client_secret = form.get("client_secret", [""])[0].strip()
 
-        if not value:
+        if not client_id or not client_secret:
             raise HTTPException(
                 status_code=400,
-                detail="Secret must not be empty",
+                detail="Client ID and client secret are required",
             )
 
-        if len(value) > 4096:
+        if len(client_id) > 4096 or len(client_secret) > 4096:
             raise HTTPException(
                 status_code=400,
-                detail="Secret is too long",
+                detail="OAuth credential is too long",
             )
 
-        nonce, ciphertext = encrypt_secret(
-            "tailscale.api",
-            value,
+        secrets_to_store = (
+            (
+                "tailscale.oauth.client_id",
+                "Tailscale OAuth client ID",
+                client_id,
+            ),
+            (
+                "tailscale.oauth.client_secret",
+                "Tailscale OAuth client secret",
+                client_secret,
+            ),
         )
 
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO platform_secrets (
+            for name, description, value in secrets_to_store:
+                nonce, ciphertext = encrypt_secret(
                     name,
-                    description,
-                    algorithm,
-                    key_version,
-                    nonce,
-                    ciphertext
+                    value,
                 )
-                VALUES (
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s
+
+                cur.execute(
+                    """
+                    INSERT INTO platform_secrets (
+                        name,
+                        description,
+                        algorithm,
+                        key_version,
+                        nonce,
+                        ciphertext
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s
+                    )
+                    ON CONFLICT (name)
+                    DO UPDATE SET
+                        description = EXCLUDED.description,
+                        algorithm = EXCLUDED.algorithm,
+                        key_version = EXCLUDED.key_version,
+                        nonce = EXCLUDED.nonce,
+                        ciphertext = EXCLUDED.ciphertext,
+                        updated_at = now()
+                    """,
+                    (
+                        name,
+                        description,
+                        SECRET_ALGORITHM,
+                        SECRET_KEY_VERSION,
+                        nonce,
+                        ciphertext,
+                    ),
                 )
-                ON CONFLICT (name)
-                DO UPDATE SET
-                    description = EXCLUDED.description,
-                    algorithm = EXCLUDED.algorithm,
-                    key_version = EXCLUDED.key_version,
-                    nonce = EXCLUDED.nonce,
-                    ciphertext = EXCLUDED.ciphertext,
-                    updated_at = now()
-                """,
-                (
-                    "tailscale.api",
-                    "Tailscale API access token",
-                    SECRET_ALGORITHM,
-                    SECRET_KEY_VERSION,
-                    nonce,
-                    ciphertext,
-                ),
-            )
 
     return RedirectResponse(
         url="/admin",
