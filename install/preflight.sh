@@ -137,6 +137,15 @@ else
 fi
 
 echo
+echo "Cryptography"
+
+if python3 -c 'from cryptography.hazmat.primitives.ciphers.aead import AESGCM' 2>/dev/null; then
+    ok "Python AES-GCM support available"
+else
+    fail "python3-cryptography / AESGCM unavailable"
+fi
+
+echo
 echo "PostgreSQL"
 
 if [[ -f "$COMPOSE_ENV" ]] &&

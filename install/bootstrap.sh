@@ -66,7 +66,7 @@ done
 log "Installing required host packages"
 
 apt-get update
-apt-get install -y ca-certificates curl quota openssl python3-minimal openssl python3-minimal
+apt-get install -y ca-certificates curl quota openssl python3-minimal python3-cryptography openssl python3-minimal
 
 if command -v docker >/dev/null 2>&1; then
     docker compose version >/dev/null 2>&1 ||
