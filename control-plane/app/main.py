@@ -111,6 +111,56 @@ def encrypt_secret(name: str, plaintext: str):
     return nonce, ciphertext
 
 
+def decrypt_secret(conn, name: str) -> bytes:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                algorithm,
+                key_version,
+                nonce,
+                ciphertext
+            FROM platform_secrets
+            WHERE name = %s
+            """,
+            (name,),
+        )
+
+        row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="Secret not configured",
+        )
+
+    algorithm, key_version, nonce, ciphertext = row
+
+    if algorithm != SECRET_ALGORITHM:
+        raise HTTPException(
+            status_code=500,
+            detail="Unsupported secret algorithm",
+        )
+
+    if key_version != SECRET_KEY_VERSION:
+        raise HTTPException(
+            status_code=500,
+            detail="Unsupported secret key version",
+        )
+
+    try:
+        return AESGCM(master_key()).decrypt(
+            bytes(nonce),
+            bytes(ciphertext),
+            secret_aad(name),
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Secret decryption failed",
+        )
+
+
 def require_admin(request: Request, conn):
     identity = tailscale_identity(request)
 
@@ -408,3 +458,19 @@ async def set_tailscale_secret(request: Request):
         url="/admin",
         status_code=303,
     )
+
+
+@app.get("/admin/secrets/tailscale-provisioning/check")
+def check_tailscale_secret(request: Request):
+    with db_connect() as conn:
+        require_admin(request, conn)
+
+        decrypt_secret(
+            conn,
+            "tailscale.provisioning",
+        )
+
+    return {
+        "secret": "tailscale.provisioning",
+        "status": "decrypt-ok",
+    }
