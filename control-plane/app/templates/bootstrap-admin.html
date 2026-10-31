@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <title>AI Platform - First Administrator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 700px;
+            margin: 60px auto;
+            padding: 0 20px;
+        }
+
+        .identity {
+            padding: 16px;
+            border: 1px solid #ccc;
+            margin: 20px 0;
+        }
+
+        button {
+            padding: 10px 18px;
+            font-size: 1rem;
+        }
+    </style>
+</head>
+
+<body>
+
+<h1>AI Platform</h1>
+
+<h2>Initial administrator setup</h2>
+
+<p>No platform administrator exists yet.</p>
+
+<div class="identity">
+    <strong>Tailscale identity</strong><br>
+    {{ identity.name or "-" }}<br>
+    {{ identity.login }}
+</div>
+
+<form method="post" action="/admin/bootstrap">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+
+    <button type="submit">
+        Make this account platform administrator
+    </button>
+</form>
+
+</body>
+</html>
