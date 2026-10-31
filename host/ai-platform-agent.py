@@ -118,9 +118,13 @@ def wait_for_tailscale(name, timeout=90):
                 None,
             )
 
+            self_info = status.get("Self", {})
+
             return {
                 "status": status,
                 "address": ipv4,
+                "provider_id": self_info.get("ID"),
+                "dns_name": self_info.get("DNSName"),
             }
 
         time.sleep(1)
@@ -268,11 +272,15 @@ def provision_tailscale_connector(request):
                 None,
             )
 
+            self_info = current.get("Self", {})
+
             return {
                 "ok": True,
                 "status": "running",
                 "container": container_name,
                 "address": ipv4,
+                "provider_id": self_info.get("ID"),
+                "dns_name": self_info.get("DNSName"),
                 "existing": True,
             }
 
@@ -369,6 +377,8 @@ def provision_tailscale_connector(request):
             "status": "running",
             "container": container_name,
             "address": ready["address"],
+            "provider_id": ready["provider_id"],
+            "dns_name": ready["dns_name"],
             "existing": False,
         }
 
@@ -415,7 +425,7 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 3,
+                    "version": 4,
                 })
                 return
 
