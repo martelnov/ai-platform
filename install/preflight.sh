@@ -190,6 +190,29 @@ else
     warn "ai-platform-helper is not installed"
 fi
 
+
+echo
+echo "Host agent"
+
+if systemctl is-enabled --quiet ai-platform-agent 2>/dev/null; then
+    ok "ai-platform-agent enabled"
+else
+    warn "ai-platform-agent not enabled"
+fi
+
+if systemctl is-active --quiet ai-platform-agent; then
+    ok "ai-platform-agent active"
+else
+    fail "ai-platform-agent not active"
+fi
+
+if [[ -S /run/ai-platform/agent.sock ]]; then
+    ok "/run/ai-platform/agent.sock"
+else
+    fail "host agent socket missing"
+fi
+
+
 echo
 echo "Summary"
 echo "  failures: $failures"

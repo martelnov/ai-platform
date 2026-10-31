@@ -300,6 +300,19 @@ for path in "$DATA_ROOT" "$MODELS_ROOT"; do
     fi
 done
 
+log "Installing host agent"
+
+install -D -m 0755 \
+    "$REPO_ROOT/host/ai-platform-agent.py" \
+    /usr/local/lib/ai-platform/ai-platform-agent.py
+
+install -m 0644 \
+    "$REPO_ROOT/install/systemd/ai-platform-agent.service" \
+    /etc/systemd/system/ai-platform-agent.service
+
+systemctl daemon-reload
+systemctl enable --now ai-platform-agent
+
 echo
 echo "AI Platform bootstrap complete"
 echo "Node:        $NODE_NAME"
