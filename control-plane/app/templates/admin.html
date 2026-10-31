@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <title>AI Platform Administration</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 1000px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid #ccc;
+        }
+
+        .ok {
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+<h1>AI Platform Administration</h1>
+
+<h2>Platform status</h2>
+
+<table>
+    <tr>
+        <th>Database</th>
+        <td class="ok">OK</td>
+    </tr>
+
+    <tr>
+        <th>Database migrations</th>
+        <td>{{ migrations }}</td>
+    </tr>
+
+    <tr>
+        <th>Configured secrets</th>
+        <td>{{ secrets | length }}</td>
+    </tr>
+</table>
+
+<h2>Secrets</h2>
+
+{% if secrets %}
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Algorithm</th>
+            <th>Key version</th>
+            <th>Expires</th>
+            <th>Updated</th>
+        </tr>
+    </thead>
+
+    <tbody>
+    {% for secret in secrets %}
+        <tr>
+            <td>{{ secret.name }}</td>
+            <td>{{ secret.algorithm }}</td>
+            <td>{{ secret.key_version }}</td>
+            <td>{{ secret.expires_at or "-" }}</td>
+            <td>{{ secret.updated_at }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% else %}
+
+<p>No secrets configured.</p>
+
+{% endif %}
+
+</body>
+</html>
