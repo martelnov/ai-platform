@@ -48,6 +48,12 @@ services:
       - postgres_password
       - master_key
 
+    volumes:
+      - type: bind
+        source: /run/ai-platform
+        target: /run/ai-platform
+        read_only: true
+
     networks:
       - control
       - frontend
