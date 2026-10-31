@@ -1,5 +1,7 @@
 import hashlib
 import hmac
+import json
+import socket
 import os
 from email.header import decode_header, make_header
 from pathlib import Path
@@ -161,6 +163,49 @@ def decrypt_secret(conn, name: str) -> bytes:
         )
 
 
+def host_agent_ping():
+    try:
+        with socket.socket(
+            socket.AF_UNIX,
+            socket.SOCK_STREAM,
+        ) as sock:
+            sock.settimeout(2)
+            sock.connect("/run/ai-platform/agent.sock")
+            sock.sendall(b'{"op":"ping"}\n')
+
+            data = b""
+
+            while not data.endswith(b"\n"):
+                chunk = sock.recv(4096)
+
+                if not chunk:
+                    raise RuntimeError(
+                        "host agent closed connection"
+                    )
+
+                data += chunk
+
+                if len(data) > 65536:
+                    raise RuntimeError(
+                        "host agent response too large"
+                    )
+
+        response = json.loads(data.decode("utf-8"))
+
+        return {
+            "ok": response.get("ok") is True,
+            "version": response.get("version"),
+            "error": response.get("error"),
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "version": None,
+            "error": str(exc),
+        }
+
+
 def require_admin(request: Request, conn):
     identity = tailscale_identity(request)
 
@@ -301,6 +346,7 @@ def admin(request: Request):
                 identity["login"],
                 "secret-set:tailscale.provisioning",
             ),
+            "host_agent": host_agent_ping(),
         },
     )
 

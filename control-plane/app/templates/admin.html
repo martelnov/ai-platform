@@ -66,6 +66,16 @@ Signed in as:
         <th>Configured secrets</th>
         <td>{{ secrets | length }}</td>
     </tr>
+    <tr>
+        <th>Host agent</th>
+        <td>
+            {% if host_agent.ok %}
+                OK (protocol v{{ host_agent.version }})
+            {% else %}
+                ERROR: {{ host_agent.error }}
+            {% endif %}
+        </td>
+    </tr>
 </table>
 
 <h2>Secrets</h2>
