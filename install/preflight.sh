@@ -110,7 +110,8 @@ echo "Platform configuration"
 for file in \
     /etc/ai-platform/config.toml \
     /etc/ai-platform/compose.env \
-    /etc/ai-platform/secrets/postgres_password
+    /etc/ai-platform/secrets/postgres_password \
+    /etc/ai-platform/secrets/master.key
 do
     if [[ -f "$file" ]]; then
         ok "$file"

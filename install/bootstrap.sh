@@ -123,6 +123,15 @@ if [[ ! -s /etc/ai-platform/secrets/postgres_password ]]; then
         > /etc/ai-platform/secrets/postgres_password
 fi
 
+if [[ ! -s /etc/ai-platform/secrets/master.key ]]; then
+    umask 077
+    openssl rand -out /etc/ai-platform/secrets/master.key 32
+fi
+
+if [[ "$(stat -c %s /etc/ai-platform/secrets/master.key)" -ne 32 ]]; then
+    die "master.key must be exactly 32 bytes"
+fi
+
 cat >/etc/ai-platform/config.toml <<CONFIG
 [platform]
 repo_root = "$REPO_ROOT"
@@ -150,7 +159,8 @@ CONFIG
 chmod 600 \
     /etc/ai-platform/config.toml \
     /etc/ai-platform/compose.env \
-    /etc/ai-platform/secrets/postgres_password
+    /etc/ai-platform/secrets/postgres_password \
+    /etc/ai-platform/secrets/master.key
 
 install -d "$DATA_ROOT/postgres"
 install -d "$DATA_ROOT/users"
