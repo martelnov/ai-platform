@@ -1,0 +1,16 @@
+[platform]
+repo_root = "/opt/ai-platform"
+
+[node]
+name = "CHANGE_ME"
+
+[paths]
+data_root = "/AI/data"
+models_root = "/AI/models"
+
+[database]
+host = "postgres"
+port = 5432
+name = "ai_platform"
+user = "ai_platform"
+password_file = "/run/secrets/postgres_password"

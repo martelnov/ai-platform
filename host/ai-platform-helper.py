@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 
 CONFIG_FILE = "/etc/ai-platform/config.toml"
-COMPOSE_FILE = "/AI/apps/ai-platform/compose.yml"
+COMPOSE_ENV_FILE = "/etc/ai-platform/compose.env"
 
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
@@ -25,9 +25,15 @@ def load_config():
 
 
 def psql(sql):
+    cfg = load_config()
+    compose_file = str(
+        Path(cfg["platform"]["repo_root"]) / "compose.yml"
+    )
+
     cmd = [
         "docker", "compose",
-        "-f", COMPOSE_FILE,
+        "--env-file", COMPOSE_ENV_FILE,
+        "-f", compose_file,
         "exec", "-T",
         "postgres",
         "psql",

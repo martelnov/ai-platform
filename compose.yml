@@ -12,7 +12,7 @@ services:
       - postgres_password
 
     volumes:
-      - /AI/data/postgres:/var/lib/postgresql
+      - ${AI_DATA_ROOT:-/AI/data}/postgres:/var/lib/postgresql
 
     networks:
       - control
