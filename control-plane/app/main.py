@@ -422,6 +422,10 @@ def admin(request: Request):
                 identity["login"],
                 "secret-set:tailscale.provisioning",
             ),
+            "tailscale_api_csrf": csrf_token(
+                identity["login"],
+                "secret-set:tailscale.api",
+            ),
             "host_agent": host_agent_ping(),
         },
     )
@@ -569,6 +573,94 @@ async def set_tailscale_secret(request: Request):
                 (
                     "tailscale.provisioning",
                     "Tailscale connector provisioning auth key",
+                    SECRET_ALGORITHM,
+                    SECRET_KEY_VERSION,
+                    nonce,
+                    ciphertext,
+                ),
+            )
+
+    return RedirectResponse(
+        url="/admin",
+        status_code=303,
+    )
+
+
+@app.post("/admin/secrets/tailscale-api")
+async def set_tailscale_api_secret(request: Request):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        form = parse_qs(
+            (await request.body()).decode("utf-8")
+        )
+
+        supplied_csrf = form.get("csrf", [""])[0]
+
+        expected_csrf = csrf_token(
+            identity["login"],
+            "secret-set:tailscale.api",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+        value = form.get("value", [""])[0].strip()
+
+        if not value:
+            raise HTTPException(
+                status_code=400,
+                detail="Secret must not be empty",
+            )
+
+        if len(value) > 4096:
+            raise HTTPException(
+                status_code=400,
+                detail="Secret is too long",
+            )
+
+        nonce, ciphertext = encrypt_secret(
+            "tailscale.api",
+            value,
+        )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO platform_secrets (
+                    name,
+                    description,
+                    algorithm,
+                    key_version,
+                    nonce,
+                    ciphertext
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                ON CONFLICT (name)
+                DO UPDATE SET
+                    description = EXCLUDED.description,
+                    algorithm = EXCLUDED.algorithm,
+                    key_version = EXCLUDED.key_version,
+                    nonce = EXCLUDED.nonce,
+                    ciphertext = EXCLUDED.ciphertext,
+                    updated_at = now()
+                """,
+                (
+                    "tailscale.api",
+                    "Tailscale API access token",
                     SECRET_ALGORITHM,
                     SECRET_KEY_VERSION,
                     nonce,

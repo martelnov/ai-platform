@@ -189,5 +189,40 @@ Signed in as:
     </form>
 </div>
 
+
+<div class="box">
+    <h3>Tailscale API access token</h3>
+
+    <p>
+        Used for Tailscale API operations such as connector sharing.
+        The value is encrypted before being stored in PostgreSQL.
+        Existing values are never displayed.
+    </p>
+
+    <form
+        method="post"
+        action="/admin/secrets/tailscale-api"
+        autocomplete="off"
+    >
+        <input
+            type="hidden"
+            name="csrf"
+            value="{{ tailscale_api_csrf }}"
+        >
+
+        <input
+            type="password"
+            name="value"
+            required
+            autocomplete="new-password"
+            placeholder="Tailscale API access token"
+        >
+
+        <button type="submit">
+            Save / replace
+        </button>
+    </form>
+</div>
+
 </body>
 </html>
