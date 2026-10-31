@@ -322,7 +322,7 @@ def provision_tailscale_connector(request):
         os.fchmod(fd, 0o600)
 
         with os.fdopen(fd, "w") as f:
-            f.write(auth_key)
+            f.write(f"TS_AUTHKEY={auth_key}\n")
 
         provision_args = permanent_container_args(
             container_name,
@@ -330,18 +330,11 @@ def provision_tailscale_connector(request):
             state_dir,
         )
 
-        # Insert initial authentication parameters
-        # before the image name.
+        # The provisioning credential exists only in /run.
+        # Docker reads it for the first authentication container.
         provision_args[-1:-1] = [
-            "-e",
-            "TS_AUTHKEY=file:/run/secrets/authkey",
-            "--mount",
-            (
-                "type=bind,"
-                f"src={secret_path},"
-                "dst=/run/secrets/authkey,"
-                "readonly"
-            ),
+            "--env-file",
+            str(secret_path),
         ]
 
         run(provision_args)
@@ -422,7 +415,7 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 2,
+                    "version": 3,
                 })
                 return
 
