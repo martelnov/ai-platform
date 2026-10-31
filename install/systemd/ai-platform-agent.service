@@ -1,0 +1,21 @@
+[Unit]
+Description=AI Platform Host Agent
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+
+ExecStart=/usr/local/lib/ai-platform/ai-platform-agent.py
+
+Restart=on-failure
+RestartSec=2
+
+RuntimeDirectory=ai-platform
+RuntimeDirectoryMode=0750
+
+UMask=0007
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
