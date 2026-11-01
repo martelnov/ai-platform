@@ -707,6 +707,46 @@ def admin_user_detail(request: Request, user_id: int):
                     "last_error": row[8],
                 })
 
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    tree,
+                    mount_path,
+                    scope,
+                    editable_by_user,
+                    source_type,
+                    source_ref,
+                    filesystem_type,
+                    encrypted,
+                    encryption_type,
+                    dedup_mode,
+                    enabled
+                FROM user_mounts
+                WHERE user_id = %s
+                ORDER BY tree, mount_path
+                """,
+                (user_id,),
+            )
+
+            mounts = [
+                {
+                    "id": row[0],
+                    "tree": row[1],
+                    "mount_path": row[2],
+                    "scope": row[3],
+                    "editable_by_user": row[4],
+                    "source_type": row[5],
+                    "source_ref": row[6],
+                    "filesystem_type": row[7],
+                    "encrypted": row[8],
+                    "encryption_type": row[9],
+                    "dedup_mode": row[10],
+                    "enabled": row[11],
+                }
+                for row in cur.fetchall()
+            ]
+
     response = templates.TemplateResponse(
         request=request,
         name="user-detail.html",
@@ -714,6 +754,7 @@ def admin_user_detail(request: Request, user_id: int):
             "identity": identity,
             "user": user,
             "storage": storage,
+            "mounts": mounts,
             "connectors": connectors,
         },
     )

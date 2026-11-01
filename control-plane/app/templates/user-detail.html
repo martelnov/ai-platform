@@ -130,6 +130,50 @@
 </div>
 
 <div class="box">
+    <h3>Additional mounts</h3>
+
+    {% if mounts %}
+    <table>
+        <thead>
+            <tr>
+                <th>Tree</th>
+                <th>Path</th>
+                <th>Source</th>
+                <th>Scope</th>
+                <th>Encrypted</th>
+                <th>Dedup</th>
+                <th>Enabled</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for mount in mounts %}
+            <tr>
+                <td>{{ mount.tree | upper }}</td>
+                <td>{{ mount.mount_path }}</td>
+                <td>{{ mount.source_type }}: {{ mount.source_ref }}</td>
+                <td>
+                    {{ mount.scope }}
+                    {% if mount.editable_by_user %}(user editable){% endif %}
+                </td>
+                <td>
+                    {% if mount.encrypted %}
+                        yes{% if mount.encryption_type %} ({{ mount.encryption_type }}){% endif %}
+                    {% else %}
+                        no
+                    {% endif %}
+                </td>
+                <td>{{ mount.dedup_mode }}</td>
+                <td>{{ "yes" if mount.enabled else "no" }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No additional mounts configured.</p>
+    {% endif %}
+</div>
+
+<div class="box">
     <h3>Connectors</h3>
 
     {% if connectors %}
