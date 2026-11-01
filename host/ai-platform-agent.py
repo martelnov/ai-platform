@@ -116,6 +116,62 @@ def resolve_user_mount_path(username, tree, mount_path):
     return target
 
 
+def user_mount_status(request):
+    username = request.get("username")
+    tree = request.get("tree")
+    mount_path = request.get("mount_path")
+
+    target = resolve_user_mount_path(
+        username,
+        tree,
+        mount_path,
+    )
+
+    result = run(
+        [
+            "findmnt",
+            "-J",
+            "-M",
+            str(target),
+            "-o",
+            "TARGET,SOURCE,FSTYPE,OPTIONS",
+        ],
+        check=False,
+    )
+
+    if result.returncode != 0:
+        return {
+            "ok": True,
+            "mounted": False,
+            "target": str(target),
+        }
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            "invalid findmnt response"
+        )
+
+    filesystems = data.get("filesystems") or []
+
+    if len(filesystems) != 1:
+        raise RuntimeError(
+            "unexpected findmnt response"
+        )
+
+    filesystem = filesystems[0]
+
+    return {
+        "ok": True,
+        "mounted": True,
+        "target": str(target),
+        "source": filesystem.get("source"),
+        "filesystem_type": filesystem.get("fstype"),
+        "options": filesystem.get("options"),
+    }
+
+
 def container_exists(name):
     result = run(
         ["docker", "inspect", name],
@@ -498,8 +554,16 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 4,
+                    "version": 5,
                 })
+                return
+
+            if operation == "user_mount_status":
+                result = user_mount_status(
+                    request
+                )
+
+                self.send(result)
                 return
 
             if operation == "tailscale_connector_provision":
