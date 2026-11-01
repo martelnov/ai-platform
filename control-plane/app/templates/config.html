@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <title>AI Platform - Config</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 1000px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+
+        .admin-nav {
+            display: flex;
+            gap: 18px;
+            margin: 0 0 30px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid #ccc;
+        }
+
+        input {
+            padding: 8px;
+            min-width: 420px;
+        }
+
+        button {
+            padding: 8px 14px;
+        }
+
+        .box {
+            border: 1px solid #ccc;
+            padding: 18px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+
+<h1>AI Platform Administration</h1>
+
+{% include "_admin_nav.html" %}
+
+<h2>Config</h2>
+
+<h3>Secrets</h3>
+
+{% if secrets %}
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Algorithm</th>
+            <th>Key version</th>
+            <th>Expires</th>
+            <th>Updated</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for secret in secrets %}
+        <tr>
+            <td>{{ secret.name }}</td>
+            <td>{{ secret.algorithm }}</td>
+            <td>{{ secret.key_version }}</td>
+            <td>{{ secret.expires_at or "-" }}</td>
+            <td>{{ secret.updated_at }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No secrets configured.</p>
+{% endif %}
+
+<div class="box">
+    <h3>Tailscale provisioning key</h3>
+
+    <p>
+        The value is encrypted before being stored in PostgreSQL.
+        Existing values are never displayed.
+    </p>
+
+    <form
+        method="post"
+        action="/admin/secrets/tailscale-provisioning"
+        autocomplete="off"
+    >
+        <input type="hidden" name="csrf" value="{{ secret_csrf }}">
+
+        <input
+            type="password"
+            name="value"
+            required
+            autocomplete="new-password"
+            placeholder="tskey-auth-..."
+        >
+
+        <button type="submit">Save / replace</button>
+    </form>
+</div>
+
+<div class="box">
+    <h3>Tailscale API access token</h3>
+
+    <p>
+        Existing values are never displayed.
+    </p>
+
+    <form
+        method="post"
+        action="/admin/secrets/tailscale-api"
+        autocomplete="off"
+    >
+        <input
+            type="hidden"
+            name="csrf"
+            value="{{ tailscale_api_csrf }}"
+        >
+
+        <input
+            type="password"
+            name="value"
+            required
+            autocomplete="new-password"
+            placeholder="Tailscale API access token"
+        >
+
+        <button type="submit">Save / replace</button>
+    </form>
+</div>
+
+</body>
+</html>

@@ -411,6 +411,38 @@ def admin(request: Request):
             cur.execute(
                 """
                 SELECT
+                    id,
+                    username,
+                    display_name,
+                    email,
+                    linux_uid,
+                    linux_gid,
+                    enabled,
+                    provisioning_status,
+                    provisioning_error
+                FROM users
+                ORDER BY username
+                """
+            )
+
+            users = [
+                {
+                    "id": row[0],
+                    "username": row[1],
+                    "display_name": row[2],
+                    "email": row[3],
+                    "linux_uid": row[4],
+                    "linux_gid": row[5],
+                    "enabled": row[6],
+                    "provisioning_status": row[7],
+                    "provisioning_error": row[8],
+                }
+                for row in cur.fetchall()
+            ]
+
+            cur.execute(
+                """
+                SELECT
                     uc.id,
                     u.username,
                     uc.connector_type,
@@ -455,6 +487,7 @@ def admin(request: Request):
             "migrations": migrations,
             "secrets": secrets,
             "identity": identity,
+            "users": users,
             "connectors": connectors,
             "secret_csrf": csrf_token(
                 identity["login"],
@@ -465,6 +498,108 @@ def admin(request: Request):
                 "secret-set:tailscale.api",
             ),
             "host_agent": host_agent_ping(),
+        },
+    )
+
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+def admin_users(request: Request):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    username,
+                    display_name,
+                    email,
+                    linux_uid,
+                    linux_gid,
+                    enabled,
+                    provisioning_status,
+                    provisioning_error
+                FROM users
+                ORDER BY username
+                """
+            )
+
+            users = [
+                {
+                    "id": row[0],
+                    "username": row[1],
+                    "display_name": row[2],
+                    "email": row[3],
+                    "linux_uid": row[4],
+                    "linux_gid": row[5],
+                    "enabled": row[6],
+                    "provisioning_status": row[7],
+                    "provisioning_error": row[8],
+                }
+                for row in cur.fetchall()
+            ]
+
+    response = templates.TemplateResponse(
+        request=request,
+        name="users.html",
+        context={
+            "identity": identity,
+            "users": users,
+        },
+    )
+
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/admin/config", response_class=HTMLResponse)
+def admin_config(request: Request):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    name,
+                    algorithm,
+                    key_version,
+                    expires_at,
+                    updated_at
+                FROM platform_secrets
+                ORDER BY name
+                """
+            )
+
+            secrets = [
+                {
+                    "name": row[0],
+                    "algorithm": row[1],
+                    "key_version": row[2],
+                    "expires_at": row[3],
+                    "updated_at": row[4],
+                }
+                for row in cur.fetchall()
+            ]
+
+    response = templates.TemplateResponse(
+        request=request,
+        name="config.html",
+        context={
+            "identity": identity,
+            "secrets": secrets,
+            "secret_csrf": csrf_token(
+                identity["login"],
+                "secret-set:tailscale.provisioning",
+            ),
+            "tailscale_api_csrf": csrf_token(
+                identity["login"],
+                "secret-set:tailscale.api",
+            ),
         },
     )
 

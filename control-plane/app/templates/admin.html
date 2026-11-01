@@ -13,6 +13,12 @@
             padding: 0 20px;
         }
 
+        .admin-nav {
+            display: flex;
+            gap: 18px;
+            margin: 0 0 30px;
+        }
+
         table {
             border-collapse: collapse;
             width: 100%;
@@ -44,6 +50,8 @@
 <body>
 
 <h1>AI Platform Administration</h1>
+
+{% include "_admin_nav.html" %}
 
 <p>
 Signed in as:
@@ -77,6 +85,42 @@ Signed in as:
         </td>
     </tr>
 </table>
+
+<h2>Users</h2>
+
+{% if users %}
+<table>
+    <thead>
+        <tr>
+            <th>User</th>
+            <th>Display name</th>
+            <th>UID:GID</th>
+            <th>Enabled</th>
+            <th>Provisioning</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for user in users %}
+        <tr>
+            <td>{{ user.username }}</td>
+            <td>{{ user.display_name or "-" }}</td>
+            <td>{{ user.linux_uid }}:{{ user.linux_gid }}</td>
+            <td>{{ "yes" if user.enabled else "no" }}</td>
+            <td>{{ user.provisioning_status }}</td>
+        </tr>
+        {% if user.provisioning_error %}
+        <tr>
+            <td colspan="5">
+                Error: {{ user.provisioning_error }}
+            </td>
+        </tr>
+        {% endif %}
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No users configured.</p>
+{% endif %}
 
 <h2>Connectors</h2>
 
