@@ -19,6 +19,7 @@ MAX_REQUEST = 65536
 TAILSCALE_IMAGE = "tailscale/tailscale:v1.104.1"
 
 NODE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+USERNAME_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
 
 def run(cmd, check=True):
@@ -41,6 +42,78 @@ def run(cmd, check=True):
 def load_config():
     with open(CONFIG_FILE, "rb") as f:
         return tomllib.load(f)
+
+
+def resolve_user_mount_path(username, tree, mount_path):
+    if (
+        not isinstance(username, str)
+        or not USERNAME_RE.fullmatch(username)
+    ):
+        raise ValueError("invalid username")
+
+    if tree not in ("data", "models"):
+        raise ValueError("invalid storage tree")
+
+    if not isinstance(mount_path, str):
+        raise ValueError("invalid mount_path")
+
+    if not mount_path.startswith("/") or mount_path == "/":
+        raise ValueError(
+            "mount_path must be below the user storage root"
+        )
+
+    relative_text = mount_path[1:]
+    parts = relative_text.split("/")
+
+    if any(
+        not part or part in (".", "..") or "\x00" in part
+        for part in parts
+    ):
+        raise ValueError("invalid mount_path")
+
+    cfg = load_config()
+
+    root_key = (
+        "data_root"
+        if tree == "data"
+        else "models_root"
+    )
+
+    storage_root = Path(
+        cfg["paths"][root_key]
+    ).resolve()
+
+    users_root = (
+        storage_root / "users"
+    ).resolve()
+
+    user_root = users_root / username
+
+    if not user_root.is_dir():
+        raise ValueError(
+            "user storage root does not exist"
+        )
+
+    resolved_user_root = user_root.resolve()
+
+    if resolved_user_root != user_root:
+        raise ValueError(
+            "user storage root must not be a symlink"
+        )
+
+    target = (
+        resolved_user_root.joinpath(*parts)
+    ).resolve(strict=False)
+
+    if (
+        target == resolved_user_root
+        or resolved_user_root not in target.parents
+    ):
+        raise ValueError(
+            "mount_path escapes user storage root"
+        )
+
+    return target
 
 
 def container_exists(name):
