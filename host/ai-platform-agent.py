@@ -171,6 +171,51 @@ def resolve_platform_directory_source(tree, source_ref):
     return source
 
 
+def resolve_nfs_source(source_ref):
+    if not isinstance(source_ref, str):
+        raise ValueError("invalid NFS source_ref")
+
+    if (
+        not source_ref
+        or any(ch.isspace() for ch in source_ref)
+        or "\x00" in source_ref
+    ):
+        raise ValueError("invalid NFS source_ref")
+
+    if ":" not in source_ref:
+        raise ValueError(
+            "NFS source must be host:/absolute/path"
+        )
+
+    host, export = source_ref.split(":", 1)
+
+    if (
+        not host
+        or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,252}",
+            host,
+        )
+    ):
+        raise ValueError("invalid NFS host")
+
+    if (
+        not export.startswith("/")
+        or export == "/"
+        or "//" in export
+    ):
+        raise ValueError("invalid NFS export path")
+
+    parts = export[1:].split("/")
+
+    if any(
+        not part or part in (".", "..")
+        for part in parts
+    ):
+        raise ValueError("invalid NFS export path")
+
+    return f"{host}:{export}"
+
+
 def user_mount_status(request):
     username = request.get("username")
     tree = request.get("tree")
