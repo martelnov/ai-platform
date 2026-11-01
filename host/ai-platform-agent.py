@@ -272,6 +272,48 @@ def user_mount_status(request):
     }
 
 
+def resolve_user_mount_source(tree, source_type, source_ref):
+    if source_type == "directory":
+        return resolve_platform_directory_source(
+            tree,
+            source_ref,
+        )
+
+    if source_type == "nfs":
+        return resolve_nfs_source(source_ref)
+
+    raise ValueError(
+        "unsupported mount source_type"
+    )
+
+
+def user_mount_source_matches(
+    status,
+    source_type,
+    source,
+):
+    if not status.get("mounted"):
+        return False
+
+    if source_type == "directory":
+        try:
+            return os.path.samefile(
+                source,
+                status["target"],
+            )
+        except OSError:
+            return False
+
+    if source_type == "nfs":
+        return (
+            status.get("filesystem_type")
+            in ("nfs", "nfs4")
+            and status.get("source") == str(source)
+        )
+
+    return False
+
+
 def user_mount_apply(request):
     username = request.get("username")
     tree = request.get("tree")
@@ -285,34 +327,26 @@ def user_mount_apply(request):
             "only platform mounts are supported"
         )
 
-    if source_type != "directory":
-        raise ValueError(
-            "only directory mounts are supported"
-        )
-
     target = resolve_user_mount_path(
         username,
         tree,
         mount_path,
     )
 
-    source = resolve_platform_directory_source(
+    source = resolve_user_mount_source(
         tree,
+        source_type,
         source_ref,
     )
 
     status = user_mount_status(request)
 
     if status["mounted"]:
-        try:
-            same_source = os.path.samefile(
-                source,
-                target,
-            )
-        except OSError:
-            same_source = False
-
-        if not same_source:
+        if not user_mount_source_matches(
+            status,
+            source_type,
+            source,
+        ):
             raise RuntimeError(
                 "target is already mounted from another source"
             )
@@ -339,26 +373,45 @@ def user_mount_apply(request):
 
     os.chmod(target, 0o750)
 
-    run([
-        "mount",
-        "--bind",
-        str(source),
-        str(target),
-    ])
+    if source_type == "directory":
+        command = [
+            "mount",
+            "--bind",
+            str(source),
+            str(target),
+        ]
+    elif source_type == "nfs":
+        command = [
+            "mount",
+            "-t",
+            "nfs",
+            "-o",
+            "nosuid,nodev",
+            str(source),
+            str(target),
+        ]
+    else:
+        raise ValueError(
+            "unsupported mount source_type"
+        )
 
-    try:
-        if not os.path.samefile(source, target):
-            raise RuntimeError(
-                "bind mount verification failed"
-            )
-    except Exception:
+    run(command)
+
+    status = user_mount_status(request)
+
+    if not user_mount_source_matches(
+        status,
+        source_type,
+        source,
+    ):
         run(
             ["umount", str(target)],
             check=False,
         )
-        raise
+        raise RuntimeError(
+            "mount verification failed"
+        )
 
-    status = user_mount_status(request)
     status["changed"] = True
     status["source_ref"] = str(source)
 
@@ -378,19 +431,15 @@ def user_mount_remove(request):
             "only platform mounts are supported"
         )
 
-    if source_type != "directory":
-        raise ValueError(
-            "only directory mounts are supported"
-        )
-
     target = resolve_user_mount_path(
         username,
         tree,
         mount_path,
     )
 
-    source = resolve_platform_directory_source(
+    source = resolve_user_mount_source(
         tree,
+        source_type,
         source_ref,
     )
 
@@ -401,15 +450,11 @@ def user_mount_remove(request):
         status["source_ref"] = str(source)
         return status
 
-    try:
-        same_source = os.path.samefile(
-            source,
-            target,
-        )
-    except OSError:
-        same_source = False
-
-    if not same_source:
+    if not user_mount_source_matches(
+        status,
+        source_type,
+        source,
+    ):
         raise RuntimeError(
             "refusing to unmount unexpected source"
         )
@@ -819,7 +864,7 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 7,
+                    "version": 8,
                 })
                 return
 
