@@ -255,6 +255,93 @@ def resolve_smb_source(source_ref):
     return f"//{host}/{share}"
 
 
+def normalize_smb_credentials(credentials):
+    if not isinstance(credentials, dict):
+        raise ValueError("SMB credentials are required")
+
+    username = credentials.get("username")
+    password = credentials.get("password")
+    domain = credentials.get("domain")
+
+    if (
+        not isinstance(username, str)
+        or not username
+        or len(username) > 255
+        or any(ch in username for ch in "\r\n\x00")
+    ):
+        raise ValueError("invalid SMB username")
+
+    if (
+        not isinstance(password, str)
+        or len(password) > 4096
+        or any(ch in password for ch in "\r\n\x00")
+    ):
+        raise ValueError("invalid SMB password")
+
+    if domain is not None:
+        if (
+            not isinstance(domain, str)
+            or not domain
+            or len(domain) > 255
+            or any(ch in domain for ch in "\r\n\x00")
+        ):
+            raise ValueError("invalid SMB domain")
+
+    return username, password, domain
+
+
+def write_smb_credentials(credentials):
+    username, password, domain = normalize_smb_credentials(
+        credentials
+    )
+
+    runtime_dir = Path(
+        "/run/ai-platform/smb-credentials"
+    )
+
+    runtime_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+        mode=0o700,
+    )
+    os.chmod(runtime_dir, 0o700)
+
+    fd, filename = tempfile.mkstemp(
+        prefix="mount-",
+        dir=runtime_dir,
+        text=True,
+    )
+
+    try:
+        os.fchmod(fd, 0o600)
+
+        with os.fdopen(
+            fd,
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write(f"username={username}\n")
+            f.write(f"password={password}\n")
+
+            if domain is not None:
+                f.write(f"domain={domain}\n")
+
+        return Path(filename)
+
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+        try:
+            os.unlink(filename)
+        except OSError:
+            pass
+
+        raise
+
+
 def user_mount_status(request):
     username = request.get("username")
     tree = request.get("tree")
