@@ -61,6 +61,38 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
 
+  gateway-api:
+    build:
+      context: ./control-plane
+
+    restart: unless-stopped
+
+    command:
+      - uvicorn
+      - app.gateway_api:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ai_platform
+      DB_USER: ai_platform
+      DB_PASSWORD_FILE: /run/secrets/postgres_password
+
+    secrets:
+      - postgres_password
+
+    networks:
+      - control
+      - gateway
+
 secrets:
   postgres_password:
     file: /etc/ai-platform/secrets/postgres_password
@@ -75,3 +107,7 @@ networks:
 
   frontend:
     name: ai-frontend
+
+  gateway:
+    name: ai-gateway
+    internal: true
