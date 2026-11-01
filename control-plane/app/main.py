@@ -7,11 +7,12 @@ from email.header import decode_header, make_header
 from pathlib import Path
 from urllib.parse import parse_qs
 
-import psycopg
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+
+from app.db import db_connect
 
 
 app = FastAPI(
@@ -27,15 +28,6 @@ SECRET_ALGORITHM = "aes-256-gcm"
 SECRET_KEY_VERSION = 1
 
 
-def read_secret_file(env_name: str) -> str:
-    path = os.environ.get(env_name)
-
-    if not path:
-        raise RuntimeError(f"{env_name} is not configured")
-
-    return Path(path).read_text().strip()
-
-
 def master_key() -> bytes:
     path = os.environ.get("MASTER_KEY_FILE")
 
@@ -48,16 +40,6 @@ def master_key() -> bytes:
         raise RuntimeError("master key must be exactly 32 bytes")
 
     return value
-
-
-def db_connect():
-    return psycopg.connect(
-        host=os.environ.get("DB_HOST", "postgres"),
-        port=int(os.environ.get("DB_PORT", "5432")),
-        dbname=os.environ.get("DB_NAME", "ai_platform"),
-        user=os.environ.get("DB_USER", "ai_platform"),
-        password=read_secret_file("DB_PASSWORD_FILE"),
-    )
 
 
 def decode_header_value(value: str | None) -> str | None:
