@@ -216,6 +216,45 @@ def resolve_nfs_source(source_ref):
     return f"{host}:{export}"
 
 
+def resolve_smb_source(source_ref):
+    if not isinstance(source_ref, str):
+        raise ValueError("invalid SMB source_ref")
+
+    if (
+        not source_ref.startswith("//")
+        or any(ch.isspace() for ch in source_ref)
+        or "\x00" in source_ref
+    ):
+        raise ValueError("invalid SMB source_ref")
+
+    parts = source_ref[2:].split("/")
+
+    if len(parts) != 2:
+        raise ValueError(
+            "SMB source must be //host/share"
+        )
+
+    host, share = parts
+
+    if not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,252}",
+        host,
+    ):
+        raise ValueError("invalid SMB host")
+
+    if (
+        not share
+        or share in (".", "..")
+        or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._$-]{0,79}",
+            share,
+        )
+    ):
+        raise ValueError("invalid SMB share")
+
+    return f"//{host}/{share}"
+
+
 def user_mount_status(request):
     username = request.get("username")
     tree = request.get("tree")
