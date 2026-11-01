@@ -417,6 +417,9 @@ def resolve_user_mount_source(tree, source_type, source_ref):
     if source_type == "nfs":
         return resolve_nfs_source(source_ref)
 
+    if source_type == "smb":
+        return resolve_smb_source(source_ref)
+
     raise ValueError(
         "unsupported mount source_type"
     )
@@ -446,7 +449,66 @@ def user_mount_source_matches(
             and status.get("source") == str(source)
         )
 
+    if source_type == "smb":
+        return (
+            status.get("filesystem_type") == "cifs"
+            and status.get("source") == str(source)
+        )
+
     return False
+
+
+def mount_smb_source(
+    username,
+    tree,
+    source,
+    target,
+    credentials,
+):
+    user_root = resolve_user_storage_root(
+        username,
+        tree,
+    )
+
+    st = user_root.stat()
+    uid = st.st_uid
+    gid = st.st_gid
+
+    if uid < 1000 or gid < 1000:
+        raise ValueError(
+            "refusing SMB mount for UID/GID below 1000"
+        )
+
+    credentials_path = write_smb_credentials(
+        credentials
+    )
+
+    try:
+        options = ",".join([
+            f"credentials={credentials_path}",
+            f"uid={uid}",
+            f"gid={gid}",
+            "forceuid",
+            "forcegid",
+            "nosuid",
+            "nodev",
+        ])
+
+        run([
+            "mount",
+            "-t",
+            "cifs",
+            "-o",
+            options,
+            str(source),
+            str(target),
+        ])
+
+    finally:
+        try:
+            credentials_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def user_mount_apply(request):
@@ -509,14 +571,15 @@ def user_mount_apply(request):
     os.chmod(target, 0o750)
 
     if source_type == "directory":
-        command = [
+        run([
             "mount",
             "--bind",
             str(source),
             str(target),
-        ]
+        ])
+
     elif source_type == "nfs":
-        command = [
+        run([
             "mount",
             "-t",
             "nfs",
@@ -524,13 +587,21 @@ def user_mount_apply(request):
             "nosuid,nodev",
             str(source),
             str(target),
-        ]
+        ])
+
+    elif source_type == "smb":
+        mount_smb_source(
+            username,
+            tree,
+            source,
+            target,
+            request.get("credentials"),
+        )
+
     else:
         raise ValueError(
             "unsupported mount source_type"
         )
-
-    run(command)
 
     status = user_mount_status(request)
 
@@ -999,7 +1070,7 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 8,
+                    "version": 9,
                 })
                 return
 
