@@ -116,6 +116,61 @@ def resolve_user_mount_path(username, tree, mount_path):
     return target
 
 
+def resolve_platform_directory_source(tree, source_ref):
+    if tree not in ("data", "models"):
+        raise ValueError("invalid storage tree")
+
+    if not isinstance(source_ref, str):
+        raise ValueError("invalid source_ref")
+
+    source_path = Path(source_ref)
+
+    if not source_path.is_absolute():
+        raise ValueError(
+            "directory source_ref must be absolute"
+        )
+
+    cfg = load_config()
+
+    root_key = (
+        "data_root"
+        if tree == "data"
+        else "models_root"
+    )
+
+    platform_root = (
+        Path(cfg["paths"][root_key]).resolve()
+        / "platform"
+    ).resolve()
+
+    if not platform_root.is_dir():
+        raise ValueError(
+            "platform storage root does not exist"
+        )
+
+    try:
+        source = source_path.resolve(strict=True)
+    except FileNotFoundError:
+        raise ValueError(
+            "directory source does not exist"
+        )
+
+    if (
+        source == platform_root
+        or platform_root not in source.parents
+    ):
+        raise ValueError(
+            "directory source must be below platform storage root"
+        )
+
+    if not source.is_dir():
+        raise ValueError(
+            "directory source is not a directory"
+        )
+
+    return source
+
+
 def user_mount_status(request):
     username = request.get("username")
     tree = request.get("tree")
@@ -170,6 +225,171 @@ def user_mount_status(request):
         "filesystem_type": filesystem.get("fstype"),
         "options": filesystem.get("options"),
     }
+
+
+def user_mount_apply(request):
+    username = request.get("username")
+    tree = request.get("tree")
+    mount_path = request.get("mount_path")
+    scope = request.get("scope")
+    source_type = request.get("source_type")
+    source_ref = request.get("source_ref")
+
+    if scope != "platform":
+        raise ValueError(
+            "only platform mounts are supported"
+        )
+
+    if source_type != "directory":
+        raise ValueError(
+            "only directory mounts are supported"
+        )
+
+    target = resolve_user_mount_path(
+        username,
+        tree,
+        mount_path,
+    )
+
+    source = resolve_platform_directory_source(
+        tree,
+        source_ref,
+    )
+
+    status = user_mount_status(request)
+
+    if status["mounted"]:
+        try:
+            same_source = os.path.samefile(
+                source,
+                target,
+            )
+        except OSError:
+            same_source = False
+
+        if not same_source:
+            raise RuntimeError(
+                "target is already mounted from another source"
+            )
+
+        status["changed"] = False
+        status["source_ref"] = str(source)
+        return status
+
+    if target.exists():
+        if not target.is_dir():
+            raise RuntimeError(
+                "mount target is not a directory"
+            )
+
+        if any(target.iterdir()):
+            raise RuntimeError(
+                "refusing to hide non-empty mount target"
+            )
+    else:
+        target.mkdir(
+            parents=True,
+            mode=0o750,
+        )
+
+    os.chmod(target, 0o750)
+
+    run([
+        "mount",
+        "--bind",
+        str(source),
+        str(target),
+    ])
+
+    try:
+        if not os.path.samefile(source, target):
+            raise RuntimeError(
+                "bind mount verification failed"
+            )
+    except Exception:
+        run(
+            ["umount", str(target)],
+            check=False,
+        )
+        raise
+
+    status = user_mount_status(request)
+    status["changed"] = True
+    status["source_ref"] = str(source)
+
+    return status
+
+
+def user_mount_remove(request):
+    username = request.get("username")
+    tree = request.get("tree")
+    mount_path = request.get("mount_path")
+    scope = request.get("scope")
+    source_type = request.get("source_type")
+    source_ref = request.get("source_ref")
+
+    if scope != "platform":
+        raise ValueError(
+            "only platform mounts are supported"
+        )
+
+    if source_type != "directory":
+        raise ValueError(
+            "only directory mounts are supported"
+        )
+
+    target = resolve_user_mount_path(
+        username,
+        tree,
+        mount_path,
+    )
+
+    source = resolve_platform_directory_source(
+        tree,
+        source_ref,
+    )
+
+    status = user_mount_status(request)
+
+    if not status["mounted"]:
+        status["changed"] = False
+        status["source_ref"] = str(source)
+        return status
+
+    try:
+        same_source = os.path.samefile(
+            source,
+            target,
+        )
+    except OSError:
+        same_source = False
+
+    if not same_source:
+        raise RuntimeError(
+            "refusing to unmount unexpected source"
+        )
+
+    run([
+        "umount",
+        str(target),
+    ])
+
+    status = user_mount_status(request)
+
+    if status["mounted"]:
+        raise RuntimeError(
+            "unmount verification failed"
+        )
+
+    try:
+        target.rmdir()
+    except OSError:
+        pass
+
+    status["changed"] = True
+    status["source_ref"] = str(source)
+
+    return status
 
 
 def container_exists(name):
@@ -554,8 +774,24 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 5,
+                    "version": 7,
                 })
+                return
+
+            if operation == "user_mount_remove":
+                result = user_mount_remove(
+                    request
+                )
+
+                self.send(result)
+                return
+
+            if operation == "user_mount_apply":
+                result = user_mount_apply(
+                    request
+                )
+
+                self.send(result)
                 return
 
             if operation == "user_mount_status":
