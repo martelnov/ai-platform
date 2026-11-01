@@ -556,6 +556,100 @@ def admin_users(request: Request):
     return response
 
 
+@app.get("/admin/users/{user_id}", response_class=HTMLResponse)
+def admin_user_detail(request: Request, user_id: int):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    username,
+                    display_name,
+                    email,
+                    linux_uid,
+                    linux_gid,
+                    enabled,
+                    provisioning_status,
+                    provisioning_error
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail="User not found",
+                )
+
+            user = {
+                "id": row[0],
+                "username": row[1],
+                "display_name": row[2],
+                "email": row[3],
+                "linux_uid": row[4],
+                "linux_gid": row[5],
+                "enabled": row[6],
+                "provisioning_status": row[7],
+                "provisioning_error": row[8],
+            }
+
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    connector_type,
+                    node_name,
+                    status,
+                    address,
+                    dns_name,
+                    last_error
+                FROM user_connectors
+                WHERE user_id = %s
+                ORDER BY connector_type
+                """,
+                (user_id,),
+            )
+
+            connectors = [
+                {
+                    "id": row[0],
+                    "connector_type": row[1],
+                    "node_name": row[2],
+                    "status": row[3],
+                    "address": row[4],
+                    "dns_name": row[5],
+                    "last_error": row[6],
+                }
+                for row in cur.fetchall()
+            ]
+
+            for connector in connectors:
+                connector["csrf"] = csrf_token(
+                    identity["login"],
+                    f"connector-provision:{connector['id']}",
+                )
+
+    response = templates.TemplateResponse(
+        request=request,
+        name="user-detail.html",
+        context={
+            "identity": identity,
+            "user": user,
+            "connectors": connectors,
+        },
+    )
+
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/admin/config", response_class=HTMLResponse)
 def admin_config(request: Request):
     with db_connect() as conn:

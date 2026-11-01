@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <title>AI Platform - User {{ user.username }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 1000px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+
+        .admin-nav {
+            display: flex;
+            gap: 18px;
+            margin: 0 0 30px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid #ccc;
+        }
+
+        button {
+            padding: 8px 14px;
+        }
+
+        .box {
+            border: 1px solid #ccc;
+            padding: 18px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+
+<h1>AI Platform Administration</h1>
+
+{% include "_admin_nav.html" %}
+
+<p><a href="/admin/users">← Users</a></p>
+
+<h2>User: {{ user.username }}</h2>
+
+<div class="box">
+    <h3>Identity</h3>
+
+    <table>
+        <tr>
+            <th>Username</th>
+            <td>{{ user.username }}</td>
+        </tr>
+        <tr>
+            <th>Display name</th>
+            <td>{{ user.display_name or "-" }}</td>
+        </tr>
+        <tr>
+            <th>Email</th>
+            <td>{{ user.email or "-" }}</td>
+        </tr>
+        <tr>
+            <th>UID:GID</th>
+            <td>{{ user.linux_uid }}:{{ user.linux_gid }}</td>
+        </tr>
+        <tr>
+            <th>Enabled</th>
+            <td>{{ "yes" if user.enabled else "no" }}</td>
+        </tr>
+        <tr>
+            <th>Provisioning</th>
+            <td>{{ user.provisioning_status }}</td>
+        </tr>
+    </table>
+
+    {% if user.provisioning_error %}
+    <p>Error: {{ user.provisioning_error }}</p>
+    {% endif %}
+</div>
+
+<div class="box">
+    <h3>Connectors</h3>
+
+    {% if connectors %}
+    <table>
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Node</th>
+                <th>Status</th>
+                <th>Address</th>
+                <th>DNS</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for connector in connectors %}
+            <tr>
+                <td>{{ connector.connector_type }}</td>
+                <td>{{ connector.node_name }}</td>
+                <td>{{ connector.status }}</td>
+                <td>{{ connector.address or "-" }}</td>
+                <td>{{ connector.dns_name or "-" }}</td>
+                <td>
+                    <form
+                        method="post"
+                        action="/admin/connectors/{{ connector.id }}/provision"
+                    >
+                        <input
+                            type="hidden"
+                            name="csrf"
+                            value="{{ connector.csrf }}"
+                        >
+                        <button type="submit">Provision</button>
+                    </form>
+                </td>
+            </tr>
+
+            {% if connector.last_error %}
+            <tr>
+                <td colspan="6">
+                    Error: {{ connector.last_error }}
+                </td>
+            </tr>
+            {% endif %}
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No connectors configured.</p>
+    {% endif %}
+</div>
+
+</body>
+</html>
