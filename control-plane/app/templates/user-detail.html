@@ -87,6 +87,49 @@
 </div>
 
 <div class="box">
+    <h3>Storage</h3>
+
+    {% if storage %}
+    <table>
+        <thead>
+            <tr>
+                <th>Space</th>
+                <th>Resource</th>
+                <th>Soft quota</th>
+                <th>Hard quota</th>
+                <th>Effective</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for item in storage %}
+            <tr>
+                <td>{{ item.label }}</td>
+                <td>{{ item.resource }}</td>
+                <td>{{ item.soft }}</td>
+                <td>{{ item.hard }}</td>
+                <td>
+                    {{ item.effective_soft }}
+                    /
+                    {{ item.effective_hard }}
+                </td>
+                <td>
+                    {% if item.last_error %}
+                        ERROR: {{ item.last_error }}
+                    {% else %}
+                        OK
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No platform storage quotas configured.</p>
+    {% endif %}
+</div>
+
+<div class="box">
     <h3>Connectors</h3>
 
     {% if connectors %}

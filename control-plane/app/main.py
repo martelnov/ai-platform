@@ -29,6 +29,31 @@ SECRET_ALGORITHM = "aes-256-gcm"
 SECRET_KEY_VERSION = 1
 
 
+def format_bytes(value):
+    if value is None:
+        return "-"
+
+    value = int(value)
+
+    units = (
+        ("TiB", 1024 ** 4),
+        ("GiB", 1024 ** 3),
+        ("MiB", 1024 ** 2),
+        ("KiB", 1024),
+    )
+
+    for unit, size in units:
+        if value >= size:
+            number = value / size
+
+            if number.is_integer():
+                return f"{int(number)} {unit}"
+
+            return f"{number:.1f} {unit}"
+
+    return f"{value} B"
+
+
 def master_key() -> bytes:
     path = os.environ.get("MASTER_KEY_FILE")
 
@@ -636,12 +661,59 @@ def admin_user_detail(request: Request, user_id: int):
                     f"connector-provision:{connector['id']}",
                 )
 
+            cur.execute(
+                """
+                SELECT
+                    sr.name,
+                    sr.backend_type,
+                    fq.soft_bytes,
+                    fq.hard_bytes,
+                    fq.effective_soft_bytes,
+                    fq.effective_hard_bytes,
+                    fq.last_applied_at,
+                    fq.last_checked_at,
+                    fq.last_error
+                FROM filesystem_quotas fq
+                JOIN storage_resources sr
+                  ON sr.id = fq.storage_resource_id
+                WHERE fq.user_id = %s
+                ORDER BY sr.id
+                """,
+                (user_id,),
+            )
+
+            storage = []
+
+            for row in cur.fetchall():
+                resource_name = row[0]
+
+                if resource_name == "local-data":
+                    label = "DATA"
+                elif resource_name == "local-models":
+                    label = "MODELS"
+                else:
+                    label = resource_name
+
+                storage.append({
+                    "label": label,
+                    "resource": resource_name,
+                    "backend_type": row[1],
+                    "soft": format_bytes(row[2]),
+                    "hard": format_bytes(row[3]),
+                    "effective_soft": format_bytes(row[4]),
+                    "effective_hard": format_bytes(row[5]),
+                    "last_applied_at": row[6],
+                    "last_checked_at": row[7],
+                    "last_error": row[8],
+                })
+
     response = templates.TemplateResponse(
         request=request,
         name="user-detail.html",
         context={
             "identity": identity,
             "user": user,
+            "storage": storage,
             "connectors": connectors,
         },
     )
