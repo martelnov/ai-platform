@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from psycopg.types.json import Jsonb
 
 from app.db import db_connect
 
@@ -142,6 +143,61 @@ def decrypt_secret(conn, name: str) -> bytes:
         raise HTTPException(
             status_code=500,
             detail="Secret decryption failed",
+        )
+
+
+def upsert_secret(
+    conn,
+    name: str,
+    plaintext: str,
+    description: str | None = None,
+    metadata: dict | None = None,
+):
+    nonce, ciphertext = encrypt_secret(
+        name,
+        plaintext,
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO platform_secrets (
+                name,
+                description,
+                algorithm,
+                key_version,
+                nonce,
+                ciphertext,
+                metadata
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
+            )
+            ON CONFLICT (name)
+            DO UPDATE SET
+                description = EXCLUDED.description,
+                algorithm = EXCLUDED.algorithm,
+                key_version = EXCLUDED.key_version,
+                nonce = EXCLUDED.nonce,
+                ciphertext = EXCLUDED.ciphertext,
+                metadata = EXCLUDED.metadata,
+                updated_at = now()
+            """,
+            (
+                name,
+                description,
+                SECRET_ALGORITHM,
+                SECRET_KEY_VERSION,
+                nonce,
+                ciphertext,
+                Jsonb(metadata or {}),
+            ),
         )
 
 
