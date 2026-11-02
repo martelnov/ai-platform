@@ -138,7 +138,13 @@
 </div>
 
 <div class="box">
-    <h3>Additional mounts</h3>
+    <h3 id="additional-mounts">Additional mounts</h3>
+
+    {% if error %}
+    <div class="error-box" role="alert">
+        Error: {{ error }}
+    </div>
+    {% endif %}
 
     {% if mounts %}
     <table>
@@ -151,6 +157,7 @@
                 <th>Encrypted</th>
                 <th>Dedup</th>
                 <th>Enabled</th>
+                <th>Action</th>
             </tr>
         </thead>
         <tbody>
@@ -172,6 +179,25 @@
                 </td>
                 <td>{{ mount.dedup_mode }}</td>
                 <td>{{ "yes" if mount.enabled else "no" }}</td>
+                <td>
+                    {% if mount.scope == "platform" %}
+                    <form
+                        method="post"
+                        action="/admin/users/{{ user.id }}/mounts/{{ mount.id }}/remove"
+                    >
+                        <input
+                            type="hidden"
+                            name="csrf"
+                            value="{{ mount.remove_csrf }}"
+                        >
+                        <button type="submit">
+                            Unmount &amp; remove
+                        </button>
+                    </form>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
             </tr>
         {% endfor %}
         </tbody>
@@ -181,12 +207,6 @@
     {% endif %}
 
     <h4 id="add-mount">Add platform directory mount</h4>
-
-    {% if error %}
-    <div class="error-box" role="alert">
-        Error: {{ error }}
-    </div>
-    {% endif %}
 
     <form
         method="post"

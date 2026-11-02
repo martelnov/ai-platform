@@ -747,6 +747,12 @@ def admin_user_detail(request: Request, user_id: int):
                 for row in cur.fetchall()
             ]
 
+            for mount in mounts:
+                mount["remove_csrf"] = csrf_token(
+                    identity["login"],
+                    f"mount-remove:{mount['id']}",
+                )
+
     response = templates.TemplateResponse(
         request=request,
         name="user-detail.html",
@@ -1111,7 +1117,7 @@ async def create_platform_directory_mount(
             return RedirectResponse(
                 url=(
                     f"/admin/users/{user_id}?error="
-                    + quote("Invalid storage tree", safe="") + "#add-mount"
+                    + quote("Invalid storage tree", safe="") + "#additional-mounts"
                 ),
                 status_code=303,
             )
@@ -1120,7 +1126,7 @@ async def create_platform_directory_mount(
             return RedirectResponse(
                 url=(
                     f"/admin/users/{user_id}?error="
-                    + quote("Mount path is required", safe="") + "#add-mount"
+                    + quote("Mount path is required", safe="") + "#additional-mounts"
                 ),
                 status_code=303,
             )
@@ -1129,7 +1135,7 @@ async def create_platform_directory_mount(
             return RedirectResponse(
                 url=(
                     f"/admin/users/{user_id}?error="
-                    + quote("Source path is required", safe="") + "#add-mount"
+                    + quote("Source path is required", safe="") + "#additional-mounts"
                 ),
                 status_code=303,
             )
@@ -1178,7 +1184,7 @@ async def create_platform_directory_mount(
                             safe="",
                         )
                     )
-                    + "#add-mount",
+                    + "#additional-mounts",
                     status_code=303,
                 )
 
@@ -1249,7 +1255,7 @@ async def create_platform_directory_mount(
                 url=(
                     f"/admin/users/{user_id}?error="
                     + quote(message, safe="")
-                    + "#add-mount"
+                    + "#additional-mounts"
                 ),
                 status_code=303,
             )
@@ -1258,6 +1264,194 @@ async def create_platform_directory_mount(
 
     return RedirectResponse(
         url=f"/admin/users/{user_id}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/users/{user_id}/mounts/{mount_id}/remove")
+async def remove_platform_mount(
+    user_id: int,
+    mount_id: int,
+    request: Request,
+):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        form = parse_qs(
+            (await request.body()).decode("utf-8")
+        )
+
+        supplied_csrf = form.get("csrf", [""])[0]
+
+        expected_csrf = csrf_token(
+            identity["login"],
+            f"mount-remove:{mount_id}",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    u.username,
+                    um.tree,
+                    um.mount_path,
+                    um.scope,
+                    um.source_type,
+                    um.source_ref
+                FROM user_mounts um
+                JOIN users u
+                  ON u.id = um.user_id
+                WHERE um.id = %s
+                  AND um.user_id = %s
+                """,
+                (
+                    mount_id,
+                    user_id,
+                ),
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Mount not found",
+                )
+
+            (
+                username,
+                tree,
+                mount_path,
+                scope,
+                source_type,
+                source_ref,
+            ) = row
+
+            if scope != "platform":
+                message = (
+                    "Only platform-managed mounts can be "
+                    "removed from this interface"
+                )
+
+                return RedirectResponse(
+                    url=(
+                        f"/admin/users/{user_id}?error="
+                        + quote(message, safe="")
+                        + "#additional-mounts"
+                    ),
+                    status_code=303,
+                )
+
+            cur.execute(
+                """
+                SELECT id, mount_path
+                FROM user_mounts
+                WHERE user_id = %s
+                  AND tree = %s
+                  AND id <> %s
+                ORDER BY mount_path
+                """,
+                (
+                    user_id,
+                    tree,
+                    mount_id,
+                ),
+            )
+
+            nested_mounts = [
+                child_path
+                for _, child_path in cur.fetchall()
+                if child_path.startswith(
+                    mount_path + "/"
+                )
+            ]
+
+            if nested_mounts:
+                message = (
+                    f"Cannot remove {mount_path}; "
+                    "nested mounts exist: "
+                    + ", ".join(nested_mounts)
+                )
+
+                return RedirectResponse(
+                    url=(
+                        f"/admin/users/{user_id}?error="
+                        + quote(message, safe="")
+                        + "#additional-mounts"
+                    ),
+                    status_code=303,
+                )
+
+        try:
+            result = host_agent_request(
+                {
+                    "op": "user_mount_remove",
+                    "username": username,
+                    "tree": tree,
+                    "mount_path": mount_path,
+                    "scope": scope,
+                    "source_type": source_type,
+                    "source_ref": source_ref,
+                },
+                timeout=120,
+            )
+
+            if not result.get("ok"):
+                raise RuntimeError(
+                    result.get("error")
+                    or "mount remove failed"
+                )
+
+        except Exception as exc:
+            conn.rollback()
+
+            message = (
+                "Mount remove failed: "
+                + str(exc)[:500]
+            )
+
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?error="
+                    + quote(message, safe="")
+                    + "#additional-mounts"
+                ),
+                status_code=303,
+            )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM user_mounts
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (
+                    mount_id,
+                    user_id,
+                ),
+            )
+
+            if cur.rowcount != 1:
+                conn.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail="Mount configuration changed",
+                )
+
+        conn.commit()
+
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}#additional-mounts",
         status_code=303,
     )
 

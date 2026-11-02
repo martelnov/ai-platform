@@ -401,6 +401,54 @@ def user_mount_status(request):
     }
 
 
+def user_mount_nested_targets(target):
+    result = run(
+        [
+            "findmnt",
+            "-R",
+            "-J",
+            "-M",
+            str(target),
+            "-o",
+            "TARGET",
+        ],
+        check=False,
+    )
+
+    if result.returncode != 0:
+        return []
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            "invalid recursive findmnt response"
+        )
+
+    nested = []
+
+    def visit(filesystems):
+        for filesystem in filesystems or []:
+            target_text = filesystem.get("target")
+
+            if target_text:
+                current = Path(target_text).resolve(
+                    strict=False
+                )
+
+                if (
+                    current != target
+                    and target in current.parents
+                ):
+                    nested.append(str(current))
+
+            visit(filesystem.get("children"))
+
+    visit(data.get("filesystems"))
+
+    return nested
+
+
 def resolve_user_mount_source(tree, source_type, source_ref):
     if source_type == "directory":
         return resolve_platform_directory_source(
@@ -667,6 +715,16 @@ def user_mount_remove(request):
     ):
         raise RuntimeError(
             "refusing to unmount unexpected source"
+        )
+
+    nested_targets = user_mount_nested_targets(
+        target
+    )
+
+    if nested_targets:
+        raise RuntimeError(
+            "refusing to unmount target with nested mounts: "
+            + ", ".join(nested_targets)
         )
 
     run([
