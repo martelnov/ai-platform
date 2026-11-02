@@ -5,7 +5,7 @@ import socket
 import os
 from email.header import decode_header, make_header
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import FastAPI, HTTPException, Request
@@ -753,8 +753,13 @@ def admin_user_detail(request: Request, user_id: int):
         context={
             "identity": identity,
             "user": user,
+            "error": request.query_params.get("error"),
             "storage": storage,
             "mounts": mounts,
+            "mount_create_csrf": csrf_token(
+                identity["login"],
+                f"mount-create:{user_id}",
+            ),
             "connectors": connectors,
         },
     )
@@ -1068,6 +1073,193 @@ def check_tailscale_secret(request: Request):
         "secret": "tailscale.provisioning",
         "status": "decrypt-ok",
     }
+
+
+@app.post("/admin/users/{user_id}/mounts/directory")
+async def create_platform_directory_mount(
+    user_id: int,
+    request: Request,
+):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        form = parse_qs(
+            (await request.body()).decode("utf-8")
+        )
+
+        supplied_csrf = form.get("csrf", [""])[0]
+
+        expected_csrf = csrf_token(
+            identity["login"],
+            f"mount-create:{user_id}",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+        tree = form.get("tree", [""])[0].strip()
+        mount_path = form.get("mount_path", [""])[0].strip()
+        source_ref = form.get("source_ref", [""])[0].strip()
+
+        if tree not in ("data", "models"):
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?error="
+                    + quote("Invalid storage tree", safe="") + "#add-mount"
+                ),
+                status_code=303,
+            )
+
+        if not mount_path:
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?error="
+                    + quote("Mount path is required", safe="") + "#add-mount"
+                ),
+                status_code=303,
+            )
+
+        if not source_ref:
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?error="
+                    + quote("Source path is required", safe="") + "#add-mount"
+                ),
+                status_code=303,
+            )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT username
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail="User not found",
+                )
+
+            username = row[0]
+
+            cur.execute(
+                """
+                SELECT id
+                FROM user_mounts
+                WHERE user_id = %s
+                  AND tree = %s
+                  AND mount_path = %s
+                """,
+                (
+                    user_id,
+                    tree,
+                    mount_path,
+                ),
+            )
+
+            if cur.fetchone():
+                return RedirectResponse(
+                    url=(
+                        f"/admin/users/{user_id}?error="
+                        + quote(
+                            f"Mount path {mount_path} already exists",
+                            safe="",
+                        )
+                    )
+                    + "#add-mount",
+                    status_code=303,
+                )
+
+            cur.execute(
+                """
+                INSERT INTO user_mounts (
+                    user_id,
+                    tree,
+                    mount_path,
+                    scope,
+                    editable_by_user,
+                    source_type,
+                    source_ref,
+                    encrypted,
+                    dedup_mode,
+                    enabled
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    'platform',
+                    false,
+                    'directory',
+                    %s,
+                    false,
+                    'none',
+                    true
+                )
+                """,
+                (
+                    user_id,
+                    tree,
+                    mount_path,
+                    source_ref,
+                ),
+            )
+
+        try:
+            result = host_agent_request(
+                {
+                    "op": "user_mount_apply",
+                    "username": username,
+                    "tree": tree,
+                    "mount_path": mount_path,
+                    "scope": "platform",
+                    "source_type": "directory",
+                    "source_ref": source_ref,
+                },
+                timeout=120,
+            )
+
+            if not result.get("ok"):
+                raise RuntimeError(
+                    result.get("error")
+                    or "mount apply failed"
+                )
+
+        except Exception as exc:
+            conn.rollback()
+
+            message = (
+                "Mount apply failed: "
+                + str(exc)[:500]
+            )
+
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?error="
+                    + quote(message, safe="")
+                    + "#add-mount"
+                ),
+                status_code=303,
+            )
+
+        conn.commit()
+
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}",
+        status_code=303,
+    )
 
 
 @app.post("/admin/connectors/{connector_id}/provision")

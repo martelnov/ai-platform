@@ -39,6 +39,14 @@
             padding: 18px;
             margin: 20px 0;
         }
+
+        .error-box {
+            border: 2px solid #b00020;
+            background: #fff0f2;
+            padding: 12px 14px;
+            margin: 12px 0 18px;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -171,6 +179,66 @@
     {% else %}
     <p>No additional mounts configured.</p>
     {% endif %}
+
+    <h4 id="add-mount">Add platform directory mount</h4>
+
+    {% if error %}
+    <div class="error-box" role="alert">
+        Error: {{ error }}
+    </div>
+    {% endif %}
+
+    <form
+        method="post"
+        action="/admin/users/{{ user.id }}/mounts/directory"
+    >
+        <input
+            type="hidden"
+            name="csrf"
+            value="{{ mount_create_csrf }}"
+        >
+
+        <p>
+            <label>
+                Tree:
+                <select name="tree">
+                    <option value="data">DATA</option>
+                    <option value="models">MODELS</option>
+                </select>
+            </label>
+        </p>
+
+        <p>
+            <label>
+                Mount path:
+                <input
+                    type="text"
+                    name="mount_path"
+                    placeholder="/projects"
+                    required
+                >
+            </label>
+        </p>
+
+        <p>
+            <label>
+                Platform source:
+                <input
+                    type="text"
+                    name="source_ref"
+                    placeholder="/AI/data/platform/projects"
+                    size="45"
+                    required
+                >
+            </label>
+        </p>
+
+        <p>
+            Source must be inside the corresponding platform storage tree.
+        </p>
+
+        <button type="submit">Add mount</button>
+    </form>
 </div>
 
 <div class="box">

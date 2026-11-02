@@ -139,24 +139,6 @@ def resolve_platform_directory_source(tree, source_ref):
             "directory source_ref must be absolute"
         )
 
-    cfg = load_config()
-
-    root_key = (
-        "data_root"
-        if tree == "data"
-        else "models_root"
-    )
-
-    platform_root = (
-        Path(cfg["paths"][root_key]).resolve()
-        / "platform"
-    ).resolve()
-
-    if not platform_root.is_dir():
-        raise ValueError(
-            "platform storage root does not exist"
-        )
-
     try:
         source = source_path.resolve(strict=True)
     except FileNotFoundError:
@@ -164,18 +146,30 @@ def resolve_platform_directory_source(tree, source_ref):
             "directory source does not exist"
         )
 
-    if (
-        source == platform_root
-        or platform_root not in source.parents
-    ):
-        raise ValueError(
-            "directory source must be below platform storage root"
-        )
-
     if not source.is_dir():
         raise ValueError(
             "directory source is not a directory"
         )
+
+    forbidden_roots = (
+        Path("/"),
+        Path("/proc"),
+        Path("/sys"),
+        Path("/dev"),
+        Path("/run"),
+    )
+
+    for forbidden in forbidden_roots:
+        if (
+            source == forbidden
+            or (
+                forbidden != Path("/")
+                and forbidden in source.parents
+            )
+        ):
+            raise ValueError(
+                "directory source is a protected system path"
+            )
 
     return source
 
@@ -535,6 +529,16 @@ def user_mount_apply(request):
         source_type,
         source_ref,
     )
+
+    if source_type == "directory":
+        if (
+            source == target
+            or source in target.parents
+            or target in source.parents
+        ):
+            raise ValueError(
+                "directory source and mount target must not contain each other"
+            )
 
     status = user_mount_status(request)
 

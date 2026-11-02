@@ -13,6 +13,7 @@ RestartSec=2
 
 RuntimeDirectory=ai-platform
 RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=restart
 
 UMask=0007
 NoNewPrivileges=true
