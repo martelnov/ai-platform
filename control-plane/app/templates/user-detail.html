@@ -138,6 +138,89 @@
 </div>
 
 <div class="box">
+    <h3 id="encryptable-storage">Encryptable storage</h3>
+
+    {% if encryption_error %}
+    <div class="error-box" role="alert">
+        Error: {{ encryption_error }}
+    </div>
+    {% endif %}
+
+    {% if encryption_roots %}
+    <table>
+        <thead>
+            <tr>
+                <th>Tree</th>
+                <th>Path</th>
+                <th>Type</th>
+                <th>Enabled</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for root in encryption_roots %}
+            <tr>
+                <td>{{ root.tree | upper }}</td>
+                <td>{{ root.root_path }}</td>
+                <td>{{ root.encryption_type }}</td>
+                <td>{{ "yes" if root.enabled else "no" }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No encryptable storage configured.</p>
+    {% endif %}
+
+    <h4>Add encryptable storage</h4>
+
+    <p>
+        This only allows the user to manage encryption on this path.
+        It does not enable encryption or set a password.
+    </p>
+
+    <form
+        method="post"
+        action="/admin/users/{{ user.id }}/encryptable-storage"
+    >
+        <input
+            type="hidden"
+            name="csrf"
+            value="{{ encryption_create_csrf }}"
+        >
+
+        <p>
+            <label>
+                Tree:
+                <select name="tree">
+                    <option value="data">DATA</option>
+                    <option value="models">MODELS</option>
+                </select>
+            </label>
+        </p>
+
+        <p>
+            <label>
+                Path:
+                <input
+                    type="text"
+                    name="root_path"
+                    placeholder="/private"
+                    required
+                >
+            </label>
+        </p>
+
+        <p>
+            Encryption type: <strong>fscrypt</strong>
+        </p>
+
+        <button type="submit">
+            Allow encryption management
+        </button>
+    </form>
+</div>
+
+<div class="box">
     <h3 id="additional-mounts">Additional mounts</h3>
 
     {% if error %}

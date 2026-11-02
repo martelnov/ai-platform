@@ -753,6 +753,34 @@ def admin_user_detail(request: Request, user_id: int):
                     f"mount-remove:{mount['id']}",
                 )
 
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    tree,
+                    root_path,
+                    encryption_type,
+                    enabled,
+                    created_at
+                FROM user_encryption_roots
+                WHERE user_id = %s
+                ORDER BY tree, root_path
+                """,
+                (user_id,),
+            )
+
+            encryption_roots = [
+                {
+                    "id": row[0],
+                    "tree": row[1],
+                    "root_path": row[2],
+                    "encryption_type": row[3],
+                    "enabled": row[4],
+                    "created_at": row[5],
+                }
+                for row in cur.fetchall()
+            ]
+
     response = templates.TemplateResponse(
         request=request,
         name="user-detail.html",
@@ -760,7 +788,13 @@ def admin_user_detail(request: Request, user_id: int):
             "identity": identity,
             "user": user,
             "error": request.query_params.get("error"),
+            "encryption_error": request.query_params.get("encryption_error"),
             "storage": storage,
+            "encryption_roots": encryption_roots,
+            "encryption_create_csrf": csrf_token(
+                identity["login"],
+                f"encryptable-create:{user_id}",
+            ),
             "mounts": mounts,
             "mount_create_csrf": csrf_token(
                 identity["login"],
@@ -1079,6 +1113,147 @@ def check_tailscale_secret(request: Request):
         "secret": "tailscale.provisioning",
         "status": "decrypt-ok",
     }
+
+
+@app.post("/admin/users/{user_id}/encryptable-storage")
+async def create_encryptable_storage(
+    user_id: int,
+    request: Request,
+):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        form = parse_qs(
+            (await request.body()).decode("utf-8")
+        )
+
+        supplied_csrf = form.get("csrf", [""])[0]
+
+        expected_csrf = csrf_token(
+            identity["login"],
+            f"encryptable-create:{user_id}",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+        tree = form.get("tree", [""])[0].strip()
+        root_path = form.get("root_path", [""])[0].strip()
+
+        if tree not in ("data", "models"):
+            message = "Invalid storage tree"
+
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?encryption_error="
+                    + quote(message, safe="")
+                    + "#encryptable-storage"
+                ),
+                status_code=303,
+            )
+
+        parts = (
+            root_path[1:].split("/")
+            if root_path.startswith("/")
+            else []
+        )
+
+        if (
+            not root_path.startswith("/")
+            or root_path == "/"
+            or any(
+                not part
+                or part in (".", "..")
+                or "\x00" in part
+                for part in parts
+            )
+        ):
+            message = (
+                "Path must be below the user storage root, "
+                "for example /private"
+            )
+
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?encryption_error="
+                    + quote(message, safe="")
+                    + "#encryptable-storage"
+                ),
+                status_code=303,
+            )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+
+            if not cur.fetchone():
+                raise HTTPException(
+                    status_code=404,
+                    detail="User not found",
+                )
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO user_encryption_roots (
+                        user_id,
+                        tree,
+                        root_path,
+                        encryption_type,
+                        enabled
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        'fscrypt',
+                        true
+                    )
+                    """,
+                    (
+                        user_id,
+                        tree,
+                        root_path,
+                    ),
+                )
+
+            conn.commit()
+
+        except Exception:
+            conn.rollback()
+
+            message = (
+                "Cannot mark this path as encryptable. "
+                "It overlaps an existing mount or "
+                "encryptable storage path."
+            )
+
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?encryption_error="
+                    + quote(message, safe="")
+                    + "#encryptable-storage"
+                ),
+                status_code=303,
+            )
+
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}#encryptable-storage",
+        status_code=303,
+    )
 
 
 @app.post("/admin/users/{user_id}/mounts/directory")
