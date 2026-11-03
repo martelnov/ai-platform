@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import json
 import os
 import re
@@ -22,11 +23,18 @@ NODE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
 
-def run(cmd, check=True):
+def run(
+    cmd,
+    check=True,
+    input_text=None,
+    timeout=None,
+):
     result = subprocess.run(
         cmd,
+        input=input_text,
         text=True,
         capture_output=True,
+        timeout=timeout,
     )
 
     if check and result.returncode != 0:
@@ -528,6 +536,258 @@ def user_encryption_status(request):
         "policy": policy,
         "encryption_type": "fscrypt",
     }
+
+
+def prepare_user_encryption_directory(
+    username,
+    tree,
+    root_path,
+):
+    user_root = resolve_user_storage_root(
+        username,
+        tree,
+    )
+
+    target = resolve_user_mount_path(
+        username,
+        tree,
+        root_path,
+    )
+
+    root_stat = user_root.stat()
+    uid = root_stat.st_uid
+    gid = root_stat.st_gid
+    mode = root_stat.st_mode & 0o777
+
+    parts = root_path[1:].split("/")
+    current = user_root
+    created = []
+
+    for part in parts:
+        current = current / part
+
+        if current.is_symlink():
+            raise RuntimeError(
+                "encryption path must not contain symlinks"
+            )
+
+        if current.exists():
+            if not current.is_dir():
+                raise RuntimeError(
+                    "encryption path component is not a directory"
+                )
+
+            current_stat = current.stat()
+
+            if (
+                current_stat.st_uid != uid
+                or current_stat.st_gid != gid
+            ):
+                raise RuntimeError(
+                    "existing encryption path has unexpected ownership"
+                )
+
+        else:
+            current.mkdir(mode=mode)
+            os.chown(current, uid, gid)
+            os.chmod(current, mode)
+            created.append(current)
+
+    if current.resolve() != target:
+        raise RuntimeError(
+            "encryption path resolution changed unexpectedly"
+        )
+
+    return target, created
+
+
+def validate_encryption_passphrase(passphrase):
+    if not isinstance(passphrase, str) or not passphrase:
+        raise ValueError(
+            "encryption passphrase is required"
+        )
+
+    if len(passphrase) > 4096:
+        raise ValueError(
+            "encryption passphrase is too long"
+        )
+
+    if any(
+        char in passphrase
+        for char in ("\x00", "\n", "\r")
+    ):
+        raise ValueError(
+            "encryption passphrase contains unsupported characters"
+        )
+
+
+def user_encryption_enable(request):
+    username = request.get("username")
+    tree = request.get("tree")
+    root_path = request.get("root_path")
+    passphrase = request.get("passphrase")
+
+    validate_encryption_passphrase(passphrase)
+
+    status = user_encryption_status(request)
+
+    if status["state"] != "not_initialized":
+        status["changed"] = False
+        return status
+
+    target = None
+    created = []
+
+    try:
+        target, created = prepare_user_encryption_directory(
+            username,
+            tree,
+            root_path,
+        )
+
+        if any(target.iterdir()):
+            raise RuntimeError(
+                "encryption directory must be empty"
+            )
+
+        digest = hashlib.sha256(
+            (
+                f"{username}\0"
+                f"{tree}\0"
+                f"{root_path}"
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+
+        protector_name = (
+            "ai-platform-"
+            + username[:20]
+            + "-"
+            + tree
+            + "-"
+            + digest
+        )
+
+        run(
+            [
+                "fscrypt",
+                "encrypt",
+                str(target),
+                "--source=custom_passphrase",
+                f"--name={protector_name}",
+                "--no-recovery",
+            ],
+            input_text=(
+                passphrase
+                + "\n"
+                + passphrase
+                + "\n"
+            ),
+        )
+
+        status = user_encryption_status(request)
+
+        if status["state"] != "unlocked":
+            raise RuntimeError(
+                "encryption initialization verification failed"
+            )
+
+        status["changed"] = True
+        return status
+
+    except Exception:
+        try:
+            status = user_encryption_status(request)
+        except Exception:
+            status = None
+
+        if (
+            status
+            and status.get("state") == "not_initialized"
+        ):
+            for path in reversed(created):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+
+        raise
+
+
+def user_encryption_lock(request):
+    status = user_encryption_status(request)
+
+    if status["state"] == "not_initialized":
+        raise RuntimeError(
+            "encryption is not initialized"
+        )
+
+    if status["state"] == "locked":
+        status["changed"] = False
+        return status
+
+    target = status["target"]
+
+    run([
+        "fscrypt",
+        "lock",
+        target,
+        "--all-users",
+    ])
+
+    status = user_encryption_status(request)
+
+    if status["state"] != "locked":
+        raise RuntimeError(
+            "encryption lock verification failed"
+        )
+
+    status["changed"] = True
+    return status
+
+
+def user_encryption_unlock(request):
+    passphrase = request.get("passphrase")
+
+    validate_encryption_passphrase(passphrase)
+
+    status = user_encryption_status(request)
+
+    if status["state"] == "not_initialized":
+        raise RuntimeError(
+            "encryption is not initialized"
+        )
+
+    if status["state"] == "unlocked":
+        status["changed"] = False
+        return status
+
+    target = status["target"]
+
+    try:
+        run(
+            [
+                "fscrypt",
+                "unlock",
+                target,
+            ],
+            input_text=passphrase + "\n",
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "encryption unlock failed: "
+            "invalid passphrase or fscrypt timed out"
+        ) from None
+
+    status = user_encryption_status(request)
+
+    if status["state"] != "unlocked":
+        raise RuntimeError(
+            "encryption unlock verification failed"
+        )
+
+    status["changed"] = True
+    return status
 
 
 def resolve_user_mount_source(tree, source_type, source_ref):
@@ -1213,7 +1473,7 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 10,
+                    "version": 12,
                 })
                 return
 
@@ -1243,6 +1503,30 @@ class AgentHandler(socketserver.StreamRequestHandler):
 
             if operation == "user_encryption_status":
                 result = user_encryption_status(
+                    request
+                )
+
+                self.send(result)
+                return
+
+            if operation == "user_encryption_enable":
+                result = user_encryption_enable(
+                    request
+                )
+
+                self.send(result)
+                return
+
+            if operation == "user_encryption_lock":
+                result = user_encryption_lock(
+                    request
+                )
+
+                self.send(result)
+                return
+
+            if operation == "user_encryption_unlock":
+                result = user_encryption_unlock(
                     request
                 )
 
