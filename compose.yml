@@ -89,6 +89,12 @@ services:
     secrets:
       - postgres_password
 
+    volumes:
+      - type: bind
+        source: /run/ai-platform
+        target: /run/ai-platform
+        read_only: true
+
     networks:
       - control
       - gateway
