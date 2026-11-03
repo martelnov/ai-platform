@@ -139,6 +139,12 @@ fi
 echo
 echo "Cryptography"
 
+if command -v fscrypt >/dev/null 2>&1; then
+    ok "fscrypt available"
+else
+    fail "fscrypt unavailable"
+fi
+
 if python3 -c 'from cryptography.hazmat.primitives.ciphers.aead import AESGCM' 2>/dev/null; then
     ok "Python AES-GCM support available"
 else

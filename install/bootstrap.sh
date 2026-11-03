@@ -70,6 +70,7 @@ apt-get install -y \
     ca-certificates \
     cifs-utils \
     curl \
+    fscrypt \
     nfs-common \
     openssl \
     python3-cryptography \

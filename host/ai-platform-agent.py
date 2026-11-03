@@ -449,6 +449,87 @@ def user_mount_nested_targets(target):
     return nested
 
 
+def user_encryption_status(request):
+    username = request.get("username")
+    tree = request.get("tree")
+    root_path = request.get("root_path")
+
+    target = resolve_user_mount_path(
+        username,
+        tree,
+        root_path,
+    )
+
+    if not target.exists():
+        return {
+            "ok": True,
+            "state": "not_initialized",
+            "target": str(target),
+        }
+
+    if not target.is_dir():
+        raise RuntimeError(
+            "encryption root is not a directory"
+        )
+
+    result = run(
+        [
+            "fscrypt",
+            "status",
+            str(target),
+        ],
+        check=False,
+    )
+
+    if result.returncode != 0:
+        error_text = (
+            result.stderr.strip()
+            or result.stdout.strip()
+        )
+
+        if (
+            "is not encrypted" in error_text
+            or "not setup for encryption with fscrypt"
+            in error_text
+        ):
+            return {
+                "ok": True,
+                "state": "not_initialized",
+                "target": str(target),
+            }
+
+        raise RuntimeError(
+            error_text
+            or "unable to determine encryption status"
+        )
+
+    output = result.stdout
+
+    if "Unlocked: Yes" in output:
+        state = "unlocked"
+    elif "Unlocked: No" in output:
+        state = "locked"
+    else:
+        raise RuntimeError(
+            "unable to determine fscrypt lock state"
+        )
+
+    policy = None
+
+    for line in output.splitlines():
+        if line.startswith("Policy:"):
+            policy = line.split(":", 1)[1].strip()
+            break
+
+    return {
+        "ok": True,
+        "state": state,
+        "target": str(target),
+        "policy": policy,
+        "encryption_type": "fscrypt",
+    }
+
+
 def resolve_user_mount_source(tree, source_type, source_ref):
     if source_type == "directory":
         return resolve_platform_directory_source(
@@ -1132,7 +1213,7 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 9,
+                    "version": 10,
                 })
                 return
 
@@ -1154,6 +1235,14 @@ class AgentHandler(socketserver.StreamRequestHandler):
 
             if operation == "user_mount_status":
                 result = user_mount_status(
+                    request
+                )
+
+                self.send(result)
+                return
+
+            if operation == "user_encryption_status":
+                result = user_encryption_status(
                     request
                 )
 
