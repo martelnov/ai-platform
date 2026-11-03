@@ -256,12 +256,41 @@ async def read_passphrase(request: Request):
     return passphrase
 
 
+async def read_passphrase_change(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid JSON request",
+        )
+
+    old_passphrase = body.get("old_passphrase")
+    new_passphrase = body.get("new_passphrase")
+
+    if not isinstance(old_passphrase, str) or not old_passphrase:
+        raise HTTPException(
+            status_code=400,
+            detail="Old passphrase is required",
+        )
+
+    if not isinstance(new_passphrase, str) or not new_passphrase:
+        raise HTTPException(
+            status_code=400,
+            detail="New passphrase is required",
+        )
+
+    return old_passphrase, new_passphrase
+
+
 def fscrypt_agent_request(
     identity,
     root,
     operation,
     *,
     passphrase=None,
+    old_passphrase=None,
+    new_passphrase=None,
 ):
     if root["encryption_type"] != "fscrypt":
         raise HTTPException(
@@ -278,6 +307,12 @@ def fscrypt_agent_request(
 
     if passphrase is not None:
         payload["passphrase"] = passphrase
+
+    if old_passphrase is not None:
+        payload["old_passphrase"] = old_passphrase
+
+    if new_passphrase is not None:
+        payload["new_passphrase"] = new_passphrase
 
     try:
         result = host_agent_request(
@@ -356,6 +391,41 @@ def gateway_storage_lock(
             identity,
             root,
             "user_encryption_lock",
+        )
+
+        conn.commit()
+
+    return result
+
+
+@app.post("/v1/storage/{root_id}/change-passphrase")
+async def gateway_storage_change_passphrase(
+    root_id: int,
+    request: Request,
+):
+    old_passphrase, new_passphrase = (
+        await read_passphrase_change(request)
+    )
+
+    with db_connect() as conn:
+        identity = resolve_connector_identity(
+            conn,
+            request,
+        )
+
+        root = resolve_encryption_root(
+            conn,
+            identity["user"]["id"],
+            root_id,
+            for_update=True,
+        )
+
+        result = fscrypt_agent_request(
+            identity,
+            root,
+            "user_encryption_change_passphrase",
+            old_passphrase=old_passphrase,
+            new_passphrase=new_passphrase,
         )
 
         conn.commit()
