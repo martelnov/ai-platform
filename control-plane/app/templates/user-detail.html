@@ -153,7 +153,9 @@
                 <th>Tree</th>
                 <th>Path</th>
                 <th>Type</th>
+                <th>State</th>
                 <th>Enabled</th>
+                <th>Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -162,7 +164,40 @@
                 <td>{{ root.tree | upper }}</td>
                 <td>{{ root.root_path }}</td>
                 <td>{{ root.encryption_type }}</td>
+                <td>
+                    {% if root.state == "not_initialized" %}
+                        Available / not initialized
+                    {% elif root.state == "locked" %}
+                        Encrypted / locked
+                    {% elif root.state == "unlocked" %}
+                        Encrypted / unlocked
+                    {% else %}
+                        Unknown
+                        {% if root.status_error %}
+                            — {{ root.status_error }}
+                        {% endif %}
+                    {% endif %}
+                </td>
                 <td>{{ "yes" if root.enabled else "no" }}</td>
+                <td>
+                    {% if root.state == "not_initialized" %}
+                    <form
+                        method="post"
+                        action="/admin/users/{{ user.id }}/encryptable-storage/{{ root.id }}/remove"
+                    >
+                        <input
+                            type="hidden"
+                            name="csrf"
+                            value="{{ root.remove_csrf }}"
+                        >
+                        <button type="submit">
+                            Disallow
+                        </button>
+                    </form>
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
             </tr>
         {% endfor %}
         </tbody>

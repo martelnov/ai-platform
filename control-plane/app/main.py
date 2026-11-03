@@ -781,6 +781,50 @@ def admin_user_detail(request: Request, user_id: int):
                 for row in cur.fetchall()
             ]
 
+        for root in encryption_roots:
+            root["state"] = "unknown"
+            root["policy"] = None
+            root["status_error"] = None
+
+            try:
+                result = host_agent_request(
+                    {
+                        "op": "user_encryption_status",
+                        "username": user["username"],
+                        "tree": root["tree"],
+                        "root_path": root["root_path"],
+                    },
+                    timeout=10,
+                )
+
+                if not result.get("ok"):
+                    raise RuntimeError(
+                        result.get("error")
+                        or "encryption status failed"
+                    )
+
+                state = result.get("state")
+
+                if state not in (
+                    "not_initialized",
+                    "locked",
+                    "unlocked",
+                ):
+                    raise RuntimeError(
+                        f"unexpected encryption state: {state}"
+                    )
+
+                root["state"] = state
+                root["policy"] = result.get("policy")
+
+            except Exception as exc:
+                root["status_error"] = str(exc)[:300]
+
+            root["remove_csrf"] = csrf_token(
+                identity["login"],
+                f"encryptable-remove:{root['id']}",
+            )
+
     response = templates.TemplateResponse(
         request=request,
         name="user-detail.html",
@@ -1249,6 +1293,172 @@ async def create_encryptable_storage(
                 ),
                 status_code=303,
             )
+
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}#encryptable-storage",
+        status_code=303,
+    )
+
+
+@app.post(
+    "/admin/users/{user_id}/encryptable-storage/{root_id}/remove"
+)
+async def remove_encryptable_storage(
+    user_id: int,
+    root_id: int,
+    request: Request,
+):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        form = parse_qs(
+            (await request.body()).decode("utf-8")
+        )
+
+        supplied_csrf = form.get("csrf", [""])[0]
+
+        expected_csrf = csrf_token(
+            identity["login"],
+            f"encryptable-remove:{root_id}",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    u.username,
+                    er.tree,
+                    er.root_path,
+                    er.encryption_type
+                FROM user_encryption_roots er
+                JOIN users u
+                  ON u.id = er.user_id
+                WHERE er.id = %s
+                  AND er.user_id = %s
+                FOR UPDATE
+                """,
+                (
+                    root_id,
+                    user_id,
+                ),
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Encryptable storage not found",
+                )
+
+            (
+                username,
+                tree,
+                root_path,
+                encryption_type,
+            ) = row
+
+        if encryption_type != "fscrypt":
+            conn.rollback()
+
+            message = (
+                "Unsupported encryption type: "
+                + str(encryption_type)
+            )
+
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?encryption_error="
+                    + quote(message, safe="")
+                    + "#encryptable-storage"
+                ),
+                status_code=303,
+            )
+
+        try:
+            result = host_agent_request(
+                {
+                    "op": "user_encryption_status",
+                    "username": username,
+                    "tree": tree,
+                    "root_path": root_path,
+                },
+                timeout=10,
+            )
+
+            if not result.get("ok"):
+                raise RuntimeError(
+                    result.get("error")
+                    or "encryption status failed"
+                )
+
+            state = result.get("state")
+
+            if state != "not_initialized":
+                conn.rollback()
+
+                message = (
+                    f"Cannot disallow {tree.upper()} {root_path}; "
+                    f"encryption state is {state}. "
+                    "Encrypted storage must remain configured."
+                )
+
+                return RedirectResponse(
+                    url=(
+                        f"/admin/users/{user_id}?encryption_error="
+                        + quote(message, safe="")
+                        + "#encryptable-storage"
+                    ),
+                    status_code=303,
+                )
+
+        except Exception as exc:
+            conn.rollback()
+
+            message = (
+                "Cannot verify encryption state: "
+                + str(exc)[:500]
+            )
+
+            return RedirectResponse(
+                url=(
+                    f"/admin/users/{user_id}?encryption_error="
+                    + quote(message, safe="")
+                    + "#encryptable-storage"
+                ),
+                status_code=303,
+            )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM user_encryption_roots
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (
+                    root_id,
+                    user_id,
+                ),
+            )
+
+            if cur.rowcount != 1:
+                conn.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail="Encryption configuration changed",
+                )
+
+        conn.commit()
 
     return RedirectResponse(
         url=f"/admin/users/{user_id}#encryptable-storage",
