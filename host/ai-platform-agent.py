@@ -538,6 +538,63 @@ def user_encryption_status(request):
     }
 
 
+def user_encryption_protector(request):
+    status = user_encryption_status(request)
+
+    if status["state"] == "not_initialized":
+        raise RuntimeError(
+            "encryption is not initialized"
+        )
+
+    target = status["target"]
+
+    result = run([
+        "fscrypt",
+        "status",
+        target,
+    ])
+
+    protector_ids = []
+
+    for line in result.stdout.splitlines():
+        match = re.match(
+            r"^([0-9a-fA-F]{16})\s+",
+            line.strip(),
+        )
+
+        if match:
+            protector_ids.append(
+                match.group(1).lower()
+            )
+
+    if len(protector_ids) != 1:
+        raise RuntimeError(
+            "expected exactly one fscrypt protector"
+        )
+
+    mount_result = run([
+        "findmnt",
+        "-n",
+        "-o",
+        "TARGET",
+        "--target",
+        target,
+    ])
+
+    mountpoint = mount_result.stdout.strip()
+
+    if not mountpoint.startswith("/"):
+        raise RuntimeError(
+            "unable to determine filesystem mountpoint"
+        )
+
+    return {
+        "target": target,
+        "mountpoint": mountpoint,
+        "protector": protector_ids[0],
+    }
+
+
 def prepare_user_encryption_directory(
     username,
     tree,
@@ -711,6 +768,49 @@ def user_encryption_enable(request):
                     pass
 
         raise
+
+
+def user_encryption_change_passphrase(request):
+    old_passphrase = request.get("old_passphrase")
+    new_passphrase = request.get("new_passphrase")
+
+    validate_encryption_passphrase(old_passphrase)
+    validate_encryption_passphrase(new_passphrase)
+
+    metadata = user_encryption_protector(request)
+
+    try:
+        run(
+            [
+                "fscrypt",
+                "metadata",
+                "change-passphrase",
+                (
+                    "--protector="
+                    + metadata["mountpoint"]
+                    + ":"
+                    + metadata["protector"]
+                ),
+            ],
+            input_text=(
+                old_passphrase
+                + "\n"
+                + new_passphrase
+                + "\n"
+                + new_passphrase
+                + "\n"
+            ),
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "passphrase change failed: "
+            "invalid old passphrase or fscrypt timed out"
+        ) from None
+
+    status = user_encryption_status(request)
+    status["changed"] = True
+    return status
 
 
 def user_encryption_lock(request):
@@ -1473,7 +1573,7 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 12,
+                    "version": 13,
                 })
                 return
 
@@ -1511,6 +1611,14 @@ class AgentHandler(socketserver.StreamRequestHandler):
 
             if operation == "user_encryption_enable":
                 result = user_encryption_enable(
+                    request
+                )
+
+                self.send(result)
+                return
+
+            if operation == "user_encryption_change_passphrase":
+                result = user_encryption_change_passphrase(
                     request
                 )
 
