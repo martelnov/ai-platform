@@ -1,34 +1,137 @@
 <!doctype html>
 <html lang="cs">
+
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>AI Platform</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>AI Platform – rozcestník</title>
+
+<style>
+body {
+    max-width: 760px;
+    margin: 3rem auto;
+    padding: 0 1rem;
+    font: 16px system-ui, sans-serif;
+    color: #20232a;
+}
+
+h1 {
+    margin-bottom: .3rem;
+}
+
+#status {
+    color: #555;
+}
+
+.services {
+    display: grid;
+    grid-template-columns: repeat(
+        auto-fit,
+        minmax(210px, 1fr)
+    );
+    gap: 12px;
+    margin-top: 1.5rem;
+}
+
+.service {
+    padding: 1.1rem;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: #fafafa;
+}
+
+.service strong {
+    display: block;
+    margin-bottom: .4rem;
+}
+
+.service small {
+    color: #666;
+}
+</style>
+
 </head>
+
 <body>
-    <h1>AI Platform</h1>
 
-    <p>Uživatelský prostor je zamčený.</p>
+<h1>AI Platform</h1>
 
-    <form>
-        <p>
-            <label>
-                Heslo:
-                <input type="password" disabled>
-            </label>
-        </p>
+<p id="status">Načítám identitu…</p>
 
-        <p>nebo</p>
+<p>
+    Uživatel:
+    <strong id="username">–</strong>
+    <br>
 
-        <p>
-            <input type="file" disabled>
-        </p>
+    Konektor:
+    <span id="connector">–</span>
+</p>
 
-        <button type="button" disabled>Odemknout</button>
-    </form>
+<h2>Služby</h2>
 
-    <hr>
+<section class="services">
 
-    <p>Gateway je připravena.</p>
+    <div class="service">
+        <strong>Správce souborů</strong>
+        <small>Spouštění připravujeme</small>
+    </div>
+
+    <div class="service">
+        <strong>ComfyUI</strong>
+        <small>Spouštění připravujeme</small>
+    </div>
+
+    <div class="service">
+        <strong>Ollama / Open WebUI</strong>
+        <small>Spouštění připravujeme</small>
+    </div>
+
+    <div class="service">
+        <strong>ACE-Step</strong>
+        <small>Spouštění připravujeme</small>
+    </div>
+
+    <div class="service">
+        <strong>Šifrované prostory</strong>
+        <small>Ovládání připravujeme</small>
+    </div>
+
+    <div class="service">
+        <strong>Rezervace GPU</strong>
+        <small>Kalendář připravujeme</small>
+    </div>
+
+</section>
+
+<script>
+fetch('/api/me', {cache: 'no-store'})
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('Gateway API unavailable');
+        }
+
+        return response.json();
+    })
+    .then(data => {
+        document.getElementById(
+            'username'
+        ).textContent = data.user.username;
+
+        document.getElementById(
+            'connector'
+        ).textContent = data.connector.node_name;
+
+        document.getElementById(
+            'status'
+        ).textContent = 'Připojeno';
+    })
+    .catch(() => {
+        document.getElementById(
+            'status'
+        ).textContent = 'Nepodařilo se načíst identitu.';
+    });
+</script>
+
 </body>
 </html>
