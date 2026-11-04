@@ -1,0 +1,9 @@
+[Unit]
+Description=AI Platform User Launcher Reconciliation
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/ai-platform/ai-platform-launcher-manager.py --all
+TimeoutStartSec=120

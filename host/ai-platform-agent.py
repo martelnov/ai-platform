@@ -1646,6 +1646,36 @@ class AgentHandler(socketserver.StreamRequestHandler):
                     request
                 )
 
+                # Ensure the user's lightweight launcher.
+                manager = Path(__file__).with_name(
+                    "ai-platform-launcher-manager.py"
+                )
+
+                try:
+                    launcher = run(
+                        [
+                            "python3",
+                            str(manager),
+                            str(request["connector_id"]),
+                        ],
+                        timeout=15,
+                    )
+
+                    result["launcher"] = (
+                        launcher.stdout.strip()
+                    )
+
+                except Exception as exc:
+                    # Connector provisioning succeeded.
+                    # Do not destroy it if launcher setup fails.
+                    result["launcher_warning"] = str(exc)
+
+                    print(
+                        "Launcher warning for connector "
+                        f'{request["connector_id"]}: {exc}',
+                        flush=True,
+                    )
+
                 self.send(result)
                 return
 

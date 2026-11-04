@@ -1,0 +1,11 @@
+[Unit]
+Description=AI Platform User Launcher Reconciliation Timer
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=2min
+AccuracySec=15s
+Unit=ai-platform-launchers.service
+
+[Install]
+WantedBy=timers.target
