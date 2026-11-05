@@ -37,7 +37,124 @@
 
 {% include "_admin_nav.html" %}
 
+
+<h2>Nový uživatel</h2>
+
+<form method="post" action="/admin/users/create">
+
+    <input type="hidden"
+           name="csrf"
+           value="{{ user_create_csrf }}">
+
+    <fieldset>
+        <legend>Identita</legend>
+
+        <p>
+            <label>
+                Uživatelské jméno<br>
+                <input type="text"
+                       name="username"
+                       maxlength="64"
+                       pattern="[a-z][a-z0-9._-]{0,63}"
+                       required>
+            </label>
+        </p>
+
+        <p>
+            <label>
+                Zobrazované jméno<br>
+                <input type="text"
+                       name="display_name"
+                       maxlength="150">
+            </label>
+        </p>
+
+        <p>
+            <label>
+                E-mail<br>
+                <input type="email"
+                       name="email"
+                       maxlength="254">
+            </label>
+        </p>
+
+        <p>
+            UID/GID: přidělí se automaticky.
+        </p>
+    </fieldset>
+
+    <fieldset>
+        <legend>Diskové kvóty (GiB)</legend>
+
+        <h4>DATA</h4>
+
+        <label>
+            Soft limit
+            <input type="number"
+                   name="data_soft_gib"
+                   min="0"
+                   max="1000000">
+        </label>
+
+        <label>
+            Hard limit
+            <input type="number"
+                   name="data_hard_gib"
+                   min="0"
+                   max="1000000">
+        </label>
+
+        <h4>MODELS</h4>
+
+        <label>
+            Soft limit
+            <input type="number"
+                   name="models_soft_gib"
+                   min="0"
+                   max="1000000">
+        </label>
+
+        <label>
+            Hard limit
+            <input type="number"
+                   name="models_hard_gib"
+                   min="0"
+                   max="1000000">
+        </label>
+
+        <p>
+            Prázdná hodnota nebo 0 znamená bez limitu.
+            Hard limit musí být alespoň stejně velký
+            jako soft limit.
+        </p>
+    </fieldset>
+
+    <fieldset>
+        <legend>Tailscale</legend>
+
+        <p>
+            <label>
+                Název konektoru<br>
+                <input type="text"
+                       name="node_name"
+                       maxlength="63"
+                       placeholder="Automaticky: ai-username">
+            </label>
+        </p>
+    </fieldset>
+
+    <p>
+        <button type="submit">
+            Založit uživatele
+        </button>
+    </p>
+
+</form>
+
+<hr>
+
 <h2>Users</h2>
+
 
 {% if users %}
 <table>

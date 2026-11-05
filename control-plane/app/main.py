@@ -3,12 +3,14 @@ import hmac
 import json
 import socket
 import os
+import logging
+import re
 from email.header import decode_header, make_header
 from pathlib import Path
 from urllib.parse import parse_qs, quote
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from psycopg.types.json import Jsonb
@@ -574,11 +576,524 @@ def admin_users(request: Request):
         context={
             "identity": identity,
             "users": users,
+            "user_create_csrf": csrf_token(
+                identity["login"],
+                "user-create",
+            ),
         },
     )
 
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+
+
+def provision_user_backend(user_id: int):
+    """Complete user provisioning; safe to retry."""
+
+    # Claim the job atomically.
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET provisioning_status = 'provisioning',
+                    provisioning_error = NULL,
+                    updated_at = now()
+                WHERE id = %s
+                  AND enabled = true
+                  AND (
+                      provisioning_status IN ('pending', 'failed')
+                      OR (
+                          provisioning_status = 'provisioning'
+                          AND updated_at < now() - interval '15 minutes'
+                      )
+                  )
+                RETURNING id
+                """,
+                (user_id,),
+            )
+
+            if cur.fetchone() is None:
+                return
+
+    try:
+        # Step 1: Directories and filesystem quotas.
+        storage = host_agent_request(
+            {
+                "op": "user_storage_provision",
+                "user_id": user_id,
+            },
+            timeout=210,
+        )
+
+        if (
+            storage.get("ok") is not True
+            or storage.get("storage_ready") is not True
+        ):
+            raise RuntimeError(
+                storage.get("error")
+                or "Storage provisioning failed"
+            )
+
+        # Step 2: Find the user's connector.
+        with db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM user_connectors
+                    WHERE user_id = %s
+                      AND connector_type = 'tailscale'
+                      AND enabled = true
+                    """,
+                    (user_id,),
+                )
+
+                row = cur.fetchone()
+
+        if row is None:
+            raise RuntimeError(
+                "User Tailscale connector not found"
+            )
+
+        connector_id = row[0]
+
+        # Step 3: Tailscale, launcher and HTTPS.
+        provision_connector_backend(connector_id)
+
+        # Step 4: Complete.
+        with db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET provisioning_status = 'ready',
+                        provisioning_error = NULL,
+                        provisioned_at = now(),
+                        updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (user_id,),
+                )
+
+        logging.info(
+            "User %s provisioning completed",
+            user_id,
+        )
+
+    except Exception as exc:
+        logging.exception(
+            "User %s provisioning failed",
+            user_id,
+        )
+
+        try:
+            with db_connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE users
+                        SET provisioning_status = 'failed',
+                            provisioning_error = %s,
+                            updated_at = now()
+                        WHERE id = %s
+                        """,
+                        (
+                            str(exc)[:2000],
+                            user_id,
+                        ),
+                    )
+
+        except Exception:
+            logging.exception(
+                "Cannot record provisioning failure for user %s",
+                user_id,
+            )
+
+
+@app.post("/admin/users/create")
+async def admin_user_create(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    form = parse_qs(
+        (await request.body()).decode("utf-8")
+    )
+
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        supplied_csrf = form.get("csrf", [""])[0]
+        expected_csrf = csrf_token(
+            identity["login"],
+            "user-create",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+        username = form.get(
+            "username", [""]
+        )[0].strip().lower()
+
+        display_name = form.get(
+            "display_name", [""]
+        )[0].strip() or None
+
+        email = form.get(
+            "email", [""]
+        )[0].strip() or None
+
+        node_name = form.get(
+            "node_name", [""]
+        )[0].strip().lower()
+
+        if not re.fullmatch(
+            r"[a-z][a-z0-9._-]{0,63}",
+            username,
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid username",
+            )
+
+        if display_name and len(display_name) > 150:
+            raise HTTPException(
+                status_code=400,
+                detail="Display name is too long",
+            )
+
+        if email and (
+            len(email) > 254
+            or "@" not in email
+            or any(ch.isspace() for ch in email)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid email",
+            )
+
+        if not node_name:
+            safe_name = re.sub(
+                r"[^a-z0-9-]",
+                "-",
+                username,
+            )
+            node_name = ("ai-" + safe_name)[:63]
+
+        if not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]{0,62}",
+            node_name,
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Tailscale node name",
+            )
+
+        def quota_bytes(field):
+            raw = form.get(field, [""])[0].strip()
+
+            if not raw or raw == "0":
+                return None
+
+            if not re.fullmatch(r"[0-9]+", raw):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid quota: {field}",
+                )
+
+            value = int(raw)
+
+            if value > 1000000:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Quota too large: {field}",
+                )
+
+            return value * 1024 ** 3
+
+        quotas = {
+            "local-data": (
+                quota_bytes("data_soft_gib"),
+                quota_bytes("data_hard_gib"),
+            ),
+            "local-models": (
+                quota_bytes("models_soft_gib"),
+                quota_bytes("models_hard_gib"),
+            ),
+        }
+
+        for soft, hard in quotas.values():
+            if (
+                soft is not None
+                and hard is not None
+                and soft > hard
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Soft quota exceeds hard quota",
+                )
+
+        with conn.cursor() as cur:
+            # Serialize platform UID/GID allocation.
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (20261104,),
+            )
+
+            cur.execute(
+                "SELECT 1 FROM users WHERE username = %s",
+                (username,),
+            )
+
+            if cur.fetchone():
+                raise HTTPException(
+                    status_code=409,
+                    detail="Username already exists",
+                )
+
+            cur.execute(
+                """
+                SELECT 1
+                FROM user_connectors
+                WHERE connector_type = 'tailscale'
+                  AND node_name = %s
+                """,
+                (node_name,),
+            )
+
+            if cur.fetchone():
+                raise HTTPException(
+                    status_code=409,
+                    detail="Tailscale node name already exists",
+                )
+
+            cur.execute(
+                """
+                SELECT id, name
+                FROM storage_resources
+                WHERE enabled = true
+                  AND name IN ('local-data', 'local-models')
+                """
+            )
+
+            resources = {
+                name: resource_id
+                for resource_id, name in cur.fetchall()
+            }
+
+            if set(resources) != set(quotas):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Required storage resources missing",
+                )
+
+            cur.execute(
+                "SELECT linux_uid, linux_gid FROM users"
+            )
+
+            occupied = set()
+
+            for uid, gid in cur.fetchall():
+                occupied.add(uid)
+                occupied.add(gid)
+
+            allocated_id = None
+
+            for candidate in range(20000, 60000):
+                if candidate in occupied:
+                    continue
+
+                try:
+                    result = host_agent_request(
+                        {
+                            "op": "linux_identity_available",
+                            "uid": candidate,
+                            "gid": candidate,
+                        },
+                        timeout=5,
+                    )
+                except Exception:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Host identity check unavailable",
+                    )
+
+                if result.get("ok") is not True:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Host identity check failed",
+                    )
+
+                if result.get("available") is True:
+                    allocated_id = candidate
+                    break
+
+            if allocated_id is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="No UID/GID available",
+                )
+
+            cur.execute(
+                """
+                INSERT INTO users (
+                    username,
+                    display_name,
+                    email,
+                    linux_uid,
+                    linux_gid
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    username,
+                    display_name,
+                    email,
+                    allocated_id,
+                    allocated_id,
+                ),
+            )
+
+            user_id = cur.fetchone()[0]
+
+            for resource_name, limits in quotas.items():
+                cur.execute(
+                    """
+                    INSERT INTO filesystem_quotas (
+                        user_id,
+                        storage_resource_id,
+                        soft_bytes,
+                        hard_bytes
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        user_id,
+                        resources[resource_name],
+                        limits[0],
+                        limits[1],
+                    ),
+                )
+
+            cur.execute(
+                """
+                INSERT INTO user_connectors (
+                    user_id,
+                    connector_type,
+                    node_name,
+                    state_path
+                )
+                VALUES (%s, 'tailscale', %s, %s)
+                """,
+                (
+                    user_id,
+                    node_name,
+                    f"connectors/tailscale/{username}",
+                ),
+            )
+
+        conn.commit()
+
+    # Database records are committed.
+    # Start provisioning after the HTTP response.
+    background_tasks.add_task(
+        provision_user_backend,
+        user_id,
+    )
+
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}",
+        status_code=303,
+    )
+
+
+
+@app.post("/admin/users/{user_id}/provision")
+async def retry_user_provision(
+    user_id: int,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    form = parse_qs(
+        (await request.body()).decode("utf-8")
+    )
+
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        supplied_csrf = form.get("csrf", [""])[0]
+
+        expected_csrf = csrf_token(
+            identity["login"],
+            f"user-provision:{user_id}",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    enabled,
+                    (
+                        provisioning_status IN ('pending', 'failed')
+                        OR (
+                            provisioning_status = 'provisioning'
+                            AND updated_at < now() - interval '15 minutes'
+                        )
+                    ) AS retry_allowed
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+
+            row = cur.fetchone()
+
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail="User not found",
+            )
+
+        if not row[0]:
+            raise HTTPException(
+                status_code=409,
+                detail="User is disabled",
+            )
+
+        if not row[1]:
+            raise HTTPException(
+                status_code=409,
+                detail="User provisioning cannot be restarted now",
+            )
+
+    background_tasks.add_task(
+        provision_user_backend,
+        user_id,
+    )
+
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}#user-provisioning",
+        status_code=303,
+    )
 
 
 @app.get("/admin/users/{user_id}", response_class=HTMLResponse)
@@ -598,7 +1113,14 @@ def admin_user_detail(request: Request, user_id: int):
                     linux_gid,
                     enabled,
                     provisioning_status,
-                    provisioning_error
+                    provisioning_error,
+                    (
+                        provisioning_status IN ('pending', 'failed')
+                        OR (
+                            provisioning_status = 'provisioning'
+                            AND updated_at < now() - interval '15 minutes'
+                        )
+                    ) AS provisioning_retry_allowed
                 FROM users
                 WHERE id = %s
                 """,
@@ -623,6 +1145,7 @@ def admin_user_detail(request: Request, user_id: int):
                 "enabled": row[6],
                 "provisioning_status": row[7],
                 "provisioning_error": row[8],
+                "provisioning_retry_allowed": row[9],
             }
 
             cur.execute(
@@ -831,6 +1354,10 @@ def admin_user_detail(request: Request, user_id: int):
         context={
             "identity": identity,
             "user": user,
+            "user_provision_csrf": csrf_token(
+                identity["login"],
+                f"user-provision:{user_id}",
+            ),
             "error": request.query_params.get("error"),
             "encryption_error": request.query_params.get("encryption_error"),
             "storage": storage,
@@ -1841,34 +2368,9 @@ async def remove_platform_mount(
     )
 
 
-@app.post("/admin/connectors/{connector_id}/provision")
-async def provision_connector(
-    connector_id: int,
-    request: Request,
-):
+def provision_connector_backend(connector_id: int):
+    """Shared connector provisioning."""
     with db_connect() as conn:
-        identity = require_admin(request, conn)
-
-        form = parse_qs(
-            (await request.body()).decode("utf-8")
-        )
-
-        supplied_csrf = form.get("csrf", [""])[0]
-
-        expected_csrf = csrf_token(
-            identity["login"],
-            f"connector-provision:{connector_id}",
-        )
-
-        if not hmac.compare_digest(
-            supplied_csrf,
-            expected_csrf,
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="Invalid CSRF token",
-            )
-
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -1942,6 +2444,12 @@ async def provision_connector(
                 or "connector provisioning failed"
             )
 
+        if result.get("launcher_warning"):
+            raise RuntimeError(
+                "Launcher provisioning failed: "
+                + str(result["launcher_warning"])
+            )
+
         with db_connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1981,10 +2489,51 @@ async def provision_connector(
                     ),
                 )
 
+        raise
+
+    return result
+
+
+@app.post("/admin/connectors/{connector_id}/provision")
+async def provision_connector(
+    connector_id: int,
+    request: Request,
+):
+    with db_connect() as conn:
+        identity = require_admin(request, conn)
+
+        form = parse_qs(
+            (await request.body()).decode("utf-8")
+        )
+
+        supplied_csrf = form.get("csrf", [""])[0]
+
+        expected_csrf = csrf_token(
+            identity["login"],
+            f"connector-provision:{connector_id}",
+        )
+
+        if not hmac.compare_digest(
+            supplied_csrf,
+            expected_csrf,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid CSRF token",
+            )
+
+
+    try:
+        provision_connector_backend(connector_id)
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail="Connector provisioning failed",
-        )
+        ) from exc
 
     return RedirectResponse(
         url="/admin",

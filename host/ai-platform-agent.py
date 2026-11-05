@@ -1539,6 +1539,44 @@ def provision_tailscale_connector(request):
             secret_path.unlink(missing_ok=True)
 
 
+
+def linux_identity_available(request):
+    """Check host UID/GID availability using NSS."""
+
+    import pwd
+    import grp
+
+    uid = request.get("uid")
+    gid = request.get("gid")
+
+    if type(uid) is not int or type(gid) is not int:
+        raise ValueError("UID/GID must be integers")
+
+    if not (20000 <= uid <= 59999):
+        raise ValueError("UID outside platform range")
+
+    if not (20000 <= gid <= 59999):
+        raise ValueError("GID outside platform range")
+
+    try:
+        pwd.getpwuid(uid)
+        uid_used = True
+    except KeyError:
+        uid_used = False
+
+    try:
+        grp.getgrgid(gid)
+        gid_used = True
+    except KeyError:
+        gid_used = False
+
+    return {
+        "ok": True,
+        "available": not uid_used and not gid_used,
+        "uid_used": uid_used,
+        "gid_used": gid_used,
+    }
+
 class AgentHandler(socketserver.StreamRequestHandler):
 
     def send(self, data):
@@ -1568,6 +1606,10 @@ class AgentHandler(socketserver.StreamRequestHandler):
             )
 
             operation = request.get("op")
+
+            if operation == "linux_identity_available":
+                self.send(linux_identity_available(request))
+                return
 
             if operation == "ping":
                 self.send({
@@ -1639,6 +1681,38 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 )
 
                 self.send(result)
+                return
+
+            if operation == "user_storage_provision":
+                user_id = request.get("user_id")
+
+                if type(user_id) is not int or user_id <= 0:
+                    raise ValueError("invalid user_id")
+
+                helper = Path(__file__).with_name(
+                    "ai-platform-helper.py"
+                )
+
+                if not helper.is_file():
+                    raise RuntimeError(
+                        "AI Platform helper is not installed"
+                    )
+
+                result = run(
+                    [
+                        "python3",
+                        str(helper),
+                        "provision-user-full",
+                        str(user_id),
+                    ],
+                    timeout=180,
+                )
+
+                self.send({
+                    "ok": True,
+                    "storage_ready": True,
+                    "output": result.stdout.strip(),
+                })
                 return
 
             if operation == "tailscale_connector_provision":

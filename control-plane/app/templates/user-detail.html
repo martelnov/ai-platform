@@ -94,6 +94,53 @@
     {% endif %}
 </div>
 
+
+<div class="box" id="user-provisioning">
+    <h3>Provisioning uživatele</h3>
+
+    <p>
+        Stav:
+        <strong>{{ user.provisioning_status }}</strong>
+    </p>
+
+    {% if user.provisioning_error %}
+    <div class="error-box">
+        {{ user.provisioning_error }}
+    </div>
+    {% endif %}
+
+    {% if user.enabled and user.provisioning_retry_allowed %}
+
+    <form
+        method="post"
+        action="/admin/users/{{ user.id }}/provision"
+    >
+        <input
+            type="hidden"
+            name="csrf"
+            value="{{ user_provision_csrf }}"
+        >
+
+        <button type="submit">
+            Opakovat provisioning
+        </button>
+    </form>
+
+    {% elif user.provisioning_status == "provisioning" %}
+
+    <p>
+        Provisioning právě probíhá.
+        Po přerušení jej lze obnovit po 15 minutách
+        od poslední aktualizace stavu.
+    </p>
+
+    {% elif user.provisioning_status == "ready" %}
+
+    <p>Uživatel je připraven.</p>
+
+    {% endif %}
+</div>
+
 <div class="box">
     <h3>Storage</h3>
 

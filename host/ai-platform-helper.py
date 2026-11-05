@@ -183,7 +183,7 @@ def format_bytes(value):
     return str(value)
 
 
-def provision_user(user_id):
+def provision_user(user_id, finalize=True):
     cfg = load_config()
 
     data_root = Path(cfg["paths"]["data_root"])
@@ -231,16 +231,17 @@ def provision_user(user_id):
         os.chmod(data_dir, 0o700)
         os.chmod(models_dir, 0o750)
 
-        psql(
-            f"""
-            UPDATE users
-            SET provisioning_status = 'ready',
-                provisioned_at = now(),
-                provisioning_error = NULL,
-                updated_at = now()
-            WHERE id = {user_id};
-            """
-        )
+        if finalize:
+            psql(
+                f"""
+                UPDATE users
+                SET provisioning_status = 'ready',
+                    provisioned_at = now(),
+                    provisioning_error = NULL,
+                    updated_at = now()
+                WHERE id = {user_id};
+                """
+            )
 
     except Exception as exc:
         try:
@@ -261,7 +262,10 @@ def provision_user(user_id):
     print(f"gid:        {gid}")
     print(f"data:       {data_dir}")
     print(f"models:     {models_dir}")
-    print("status:     ready")
+    print(
+        "status:     "
+        + ("ready" if finalize else "provisioning")
+    )
 
 
 def quota_apply(user_id):
@@ -339,6 +343,36 @@ def quota_apply(user_id):
         )
 
 
+
+def provision_user_full(user_id):
+    """Provision directories and quotas as one workflow."""
+
+    try:
+        provision_user(user_id, finalize=False)
+        quota_apply(user_id)
+
+    except (Exception, SystemExit) as exc:
+        message = (
+            str(exc)
+            if isinstance(exc, Exception)
+            else "Storage provisioning command failed"
+        )
+
+        psql(
+            f"""
+            UPDATE users
+            SET provisioning_status = 'failed',
+                provisioning_error = {sql_text(message[:1500])},
+                updated_at = now()
+            WHERE id = {user_id};
+            """
+        )
+        raise
+
+    # Storage is ready, but the full user provisioning
+    # is not complete until the connector and launcher work.
+    print("status:     storage-ready; provisioning continues")
+
 def quota_status(user_id):
     cfg = load_config()
     user = get_user(user_id)
@@ -394,6 +428,8 @@ def main():
 
     if command == "provision-user":
         provision_user(user_id)
+    elif command == "provision-user-full":
+        provision_user_full(user_id)
     elif command == "quota-apply":
         quota_apply(user_id)
     elif command == "quota-status":
