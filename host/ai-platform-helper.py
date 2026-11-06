@@ -117,6 +117,116 @@ def get_quotas(user_id):
     return json.loads(raw)
 
 
+def workload_describe(workload_id):
+    """Return the authoritative runtime specification from PostgreSQL."""
+
+    raw = psql(
+        f"""
+        SELECT json_build_object(
+            'id', w.id,
+            'mode', w.mode,
+            'status', w.status,
+            'host_name', h.name,
+            'user_id', u.id,
+            'username', u.username,
+            'uid', u.linux_uid,
+            'gid', u.linux_gid,
+            'user_enabled', u.enabled,
+            'provisioning_status', u.provisioning_status,
+            'connector_id', uc.id,
+            'connector_enabled', uc.enabled,
+            'connector_status', uc.status,
+            'application_code', a.code,
+            'image', a.image,
+            'application_enabled', a.enabled,
+            'application_config', a.config,
+            'profile_name', ap.name,
+            'profile_enabled', ap.enabled,
+            'requires_reservation', ap.requires_reservation,
+            'cpu_limit', ap.cpu_limit,
+            'memory_limit_bytes', ap.memory_limit_bytes,
+            'gpu_min', ap.gpu_min,
+            'gpu_max', ap.gpu_max,
+            'command', ap.command,
+            'environment', ap.environment,
+            'profile_config', ap.config,
+            'mounts', (
+                SELECT COALESCE(json_agg(json_build_object(
+                    'tree', um.tree,
+                    'mount_path', um.mount_path,
+                    'scope', um.scope,
+                    'source_type', um.source_type,
+                    'source_ref', um.source_ref
+                ) ORDER BY um.tree, um.mount_path), '[]'::json)
+                FROM user_mounts um
+                WHERE um.user_id = u.id
+                  AND um.enabled = true
+                  AND um.mount_path <> '/'
+            ),
+            'encryption_roots', (
+                SELECT COALESCE(json_agg(json_build_object(
+                    'tree', er.tree,
+                    'root_path', er.root_path
+                ) ORDER BY er.tree, er.root_path), '[]'::json)
+                FROM user_encryption_roots er
+                WHERE er.user_id = u.id
+                  AND er.enabled = true
+            )
+        )::text
+        FROM workloads w
+        JOIN hosts h ON h.id = w.host_id
+        JOIN users u ON u.id = w.user_id
+        JOIN user_connectors uc ON uc.id = w.connector_id
+                            AND uc.user_id = u.id
+        JOIN application_profiles ap ON ap.id = w.application_profile_id
+        JOIN applications a ON a.id = ap.application_id
+        WHERE w.id = {workload_id};
+        """
+    )
+
+    if not raw:
+        die(f"workload {workload_id} not found or incomplete")
+
+    print(raw)
+
+
+def workload_set_status(workload_id, status):
+    """Record agent-confirmed lifecycle transitions, not desired state."""
+
+    if status not in ('starting', 'running', 'stopping', 'stopped', 'failed'):
+        die('invalid workload status')
+
+    # Integer identifiers and the status allowlist prevent SQL interpolation.
+    container = psql(
+        f"""
+        UPDATE workloads
+        SET status = {sql_text(status)},
+            container_name = CASE
+                WHEN {sql_text(status)} IN ('running', 'starting')
+                THEN 'ai-files-' || user_id::text
+                ELSE container_name
+            END,
+            started_at = CASE
+                WHEN {sql_text(status)} = 'running'
+                THEN now() ELSE started_at END,
+            stopped_at = CASE
+                WHEN {sql_text(status)} IN ('stopped', 'failed')
+                THEN now() ELSE stopped_at END,
+            updated_at = now(),
+            last_error = CASE
+                WHEN {sql_text(status)} = 'failed'
+                THEN 'host agent failed to start or stop workload'
+                ELSE NULL END
+        WHERE id = {workload_id}
+          AND mode = 'utility'
+        RETURNING id;
+        """
+    )
+
+    if container != str(workload_id):
+        die(f"cannot update workload {workload_id}")
+
+
 def check_mount(path):
     if not path.is_dir():
         die(f"storage root does not exist: {path}")
@@ -413,7 +523,8 @@ def main():
     if len(sys.argv) != 3:
         die(
             "usage: ai-platform-helper "
-            "<provision-user|quota-apply|quota-status> <user-id>"
+            "<provision-user|quota-apply|quota-status|workload-describe|"
+            "workload-set-*> <user-id-or-workload-id>"
         )
 
     command = sys.argv[1]
@@ -426,7 +537,19 @@ def main():
     if user_id <= 0:
         die("user-id must be greater than zero")
 
-    if command == "provision-user":
+    if command == "workload-describe":
+        workload_describe(user_id)
+    elif command == "workload-set-starting":
+        workload_set_status(user_id, "starting")
+    elif command == "workload-set-running":
+        workload_set_status(user_id, "running")
+    elif command == "workload-set-stopping":
+        workload_set_status(user_id, "stopping")
+    elif command == "workload-set-stopped":
+        workload_set_status(user_id, "stopped")
+    elif command == "workload-set-failed":
+        workload_set_status(user_id, "failed")
+    elif command == "provision-user":
         provision_user(user_id)
     elif command == "provision-user-full":
         provision_user_full(user_id)

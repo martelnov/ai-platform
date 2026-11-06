@@ -5,6 +5,7 @@ import json
 import os
 import re
 import socketserver
+import threading
 import subprocess
 import tempfile
 import time
@@ -18,6 +19,7 @@ CONFIG_FILE = "/etc/ai-platform/config.toml"
 MAX_REQUEST = 65536
 
 TAILSCALE_IMAGE = "tailscale/tailscale:v1.104.1"
+WORKLOAD_LOCK = threading.Lock()
 
 NODE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
@@ -1577,6 +1579,314 @@ def linux_identity_available(request):
         "gid_used": gid_used,
     }
 
+# Workload runtime: the DB specification is read by the existing host
+# helper. No image, path or Docker options are accepted from the request.
+WORKLOAD_HELPER = "/usr/local/sbin/ai-platform-helper"
+
+
+def helper_workload_command(command, workload_id):
+    if type(workload_id) is not int or workload_id <= 0:
+        raise ValueError("invalid workload_id")
+
+    return run(
+        [WORKLOAD_HELPER, command, str(workload_id)],
+        timeout=30,
+    ).stdout.strip()
+
+
+def load_workload(workload_id):
+    spec = json.loads(
+        helper_workload_command("workload-describe", workload_id)
+    )
+
+    if not isinstance(spec, dict) or spec.get("id") != workload_id:
+        raise RuntimeError("unexpected workload specification")
+
+    return spec
+
+
+def positive_int(value, name, minimum=1, maximum=2**63 - 1):
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError(f"invalid {name}")
+    return value
+
+
+def validated_salamander_spec(spec, *, start=False):
+    """Initially support utility Salamander only; fail closed otherwise."""
+    if spec.get("application_code") != "salamander":
+        raise ValueError("only SalamanderRS is supported in this stage")
+    if spec.get("mode") != "utility":
+        raise ValueError("SalamanderRS requires utility mode")
+    if spec.get("requires_reservation") is not False:
+        raise ValueError("SalamanderRS must not require GPU reservation")
+    if spec.get("gpu_min") != 0 or spec.get("gpu_max") != 0:
+        raise ValueError("GPU must be disabled for SalamanderRS")
+    if spec.get("command") is not None:
+        raise ValueError("custom command not supported for SalamanderRS")
+
+    if spec.get("host_name") != load_config()["node"]["name"]:
+        raise ValueError("workload is assigned to another host")
+
+    user_id = positive_int(spec.get("user_id"), "user_id")
+    connector_id = positive_int(spec.get("connector_id"), "connector_id")
+    uid = positive_int(spec.get("uid"), "uid", 20000, 59999)
+    gid = positive_int(spec.get("gid"), "gid", 20000, 59999)
+    username = spec.get("username")
+
+    if not isinstance(username, str) or not USERNAME_RE.fullmatch(username):
+        raise ValueError("invalid username")
+
+    if start:
+        if not all(spec.get(key) is True for key in (
+            "user_enabled", "connector_enabled", "application_enabled",
+            "profile_enabled",
+        )):
+            raise RuntimeError("user, connector or application is disabled")
+        if spec.get("provisioning_status") != "ready":
+            raise RuntimeError("user provisioning not ready")
+        if spec.get("connector_status") != "running":
+            raise RuntimeError("connector not marked running")
+
+    image = spec.get("image")
+    if not isinstance(image, str) or not re.fullmatch(
+        r"ai-platform-salamander:[A-Za-z0-9_.-]+", image
+    ):
+        raise ValueError("unexpected SalamanderRS image")
+
+    return user_id, connector_id, uid, gid, username
+
+
+def inspect_container(name):
+    result = run(["docker", "inspect", name], check=False)
+    if result.returncode != 0:
+        error = result.stderr.strip()
+        if "No such object:" in error or "No such container:" in error:
+            return None
+        raise RuntimeError(error or "Docker inspect failed")
+    try:
+        items = json.loads(result.stdout)
+        if not isinstance(items, list) or len(items) != 1:
+            raise ValueError("unexpected Docker inspect data")
+        return items[0]
+    except (ValueError, IndexError, TypeError):
+        raise RuntimeError("invalid Docker inspection result")
+
+
+def salamander_container_name(spec):
+    return f"ai-files-{spec['user_id']}"
+
+
+def validate_salamander_container(info, spec):
+    labels = info.get("Config", {}).get("Labels") or {}
+    expected = {
+        "ai.platform.component": "file-manager",
+        "ai.platform.application": "salamander",
+        "ai.platform.user_id": str(spec["user_id"]),
+        "ai.platform.connector_id": str(spec["connector_id"]),
+        "ai.platform.workload_id": str(spec["id"]),
+    }
+    if any(labels.get(k) != v for k, v in expected.items()):
+        raise RuntimeError("refusing to manage a container with different ownership")
+
+
+def workload_storage_preflight(spec):
+    user_id, connector_id, uid, gid, username = validated_salamander_spec(
+        spec, start=True
+    )
+
+    roots = {}
+    cfg = load_config()
+    for tree in ("data", "models"):
+        root_key = "data_root" if tree == "data" else "models_root"
+        if not os.path.ismount(cfg["paths"][root_key]):
+            raise RuntimeError(f"{tree} filesystem is not mounted")
+        root = resolve_user_storage_root(username, tree)
+        st = root.stat()
+        if st.st_uid != uid or st.st_gid != gid:
+            raise RuntimeError(f"{tree} root has unexpected UID/GID")
+        roots[tree] = root
+
+    # Mounts must be prepared in advance through the existing mount API.
+    # Never start with a missing mount and accidentally expose its underlying
+    # empty directory in place of the intended filesystem.
+    for mount in spec.get("mounts", []):
+        if mount.get("scope") != "platform":
+            raise RuntimeError("user-managed mount not yet supported")
+        status = user_mount_status({
+            "username": username,
+            "tree": mount["tree"],
+            "mount_path": mount["mount_path"],
+        })
+        if not status["mounted"]:
+            raise RuntimeError(f"mount not ready: {mount['tree']}:{mount['mount_path']}")
+        source = resolve_user_mount_source(
+            mount["tree"], mount["source_type"], mount["source_ref"]
+        )
+        if not user_mount_source_matches(status, mount["source_type"], source):
+            raise RuntimeError(f"mount source mismatch: {mount['mount_path']}")
+
+    # Until lifecycle-aware locking is implemented, refuse to start while
+    # any configured fscrypt root is locked. Existing unlock API handles it.
+    for er in spec.get("encryption_roots", []):
+        status = user_encryption_status({
+            "username": username,
+            "tree": er["tree"],
+            "root_path": er["root_path"],
+        })
+        if status["state"] == "locked":
+            raise RuntimeError(f"fscrypt locked: {er['tree']}:{er['root_path']}")
+
+    return roots
+
+
+def salamander_docker_args(spec, roots, connector_id, uid, gid):
+    env = spec.get("environment")
+    expected_env = {
+        "SALAMANDER_DATA_ROOT": "/data",
+        "SALAMANDER_MODELS_ROOT": "/models",
+        "SALAMANDER_ENABLE_WRITES": "1",
+        "SALAMANDER_PORT": "8090",
+    }
+    if env != expected_env:
+        raise ValueError("unexpected SalamanderRS environment in DB")
+
+    app_config = spec.get("application_config") or {}
+    if app_config.get("include_common") is not False:
+        raise ValueError("COMMON models must not be shared with SalamanderRS")
+
+    config = spec.get("profile_config") or {}
+    if config.get("cpu_pool") != "interactive":
+        raise ValueError("unexpected CPU pool")
+    pids = positive_int(config.get("pids_limit"), "pids_limit", 16, 4096)
+    memory = positive_int(spec.get("memory_limit_bytes"), "memory", 64 * 1024**2)
+    swap = positive_int(config.get("memory_swap_bytes"), "memory_swap_bytes")
+    if swap != memory:
+        raise ValueError("this utility profile must disable memory swap")
+    cpu = spec.get("cpu_limit")
+    if type(cpu) not in (int, float) or not (0 < cpu <= 64):
+        raise ValueError("invalid cpu_limit")
+
+    args = [
+        "docker", "run", "-d",
+        "--name", salamander_container_name(spec),
+        "--network", f"container:ai-ts-{connector_id}",
+        "--restart", "no",
+        "--user", f"{uid}:{gid}",
+        "--cpus", str(cpu),
+        "--memory", str(memory),
+        "--memory-swap", str(swap),
+        "--pids-limit", str(pids),
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+    ]
+    for key, value in (
+        ("ai.platform.component", "file-manager"),
+        ("ai.platform.application", "salamander"),
+        ("ai.platform.user_id", str(spec["user_id"])),
+        ("ai.platform.connector_id", str(connector_id)),
+        ("ai.platform.workload_id", str(spec["id"])),
+    ):
+        args.extend(["--label", f"{key}={value}"])
+    for tree in ("data", "models"):
+        args.extend([
+            "--mount",
+            f"type=bind,src={roots[tree]},dst=/{tree}",
+        ])
+    for key, value in sorted(expected_env.items()):
+        args.extend(["-e", f"{key}={value}"])
+    args.append(spec["image"])
+    return args
+
+
+def workload_start(request):
+    workload_id = positive_int(request.get("workload_id"), "workload_id")
+    with WORKLOAD_LOCK:
+        spec = load_workload(workload_id)
+        user_id, connector_id, uid, gid, username = validated_salamander_spec(
+            spec, start=True
+        )
+        roots = workload_storage_preflight(spec)
+        ts_info = inspect_container(f"ai-ts-{connector_id}")
+        if ts_info is None or not ts_info["State"]["Running"]:
+            raise RuntimeError("Tailscale connector is not running")
+        ts_state = tailscale_status(f"ai-ts-{connector_id}")
+        if not ts_state or ts_state.get("BackendState") != "Running":
+            raise RuntimeError("Tailscale connector is not ready")
+
+        name = salamander_container_name(spec)
+        # Check availability before retiring any old, stopped instance.
+        run(["docker", "image", "inspect", spec["image"]])
+        current = inspect_container(name)
+        if current is not None:
+            validate_salamander_container(current, spec)
+            if current["State"]["Running"]:
+                expected_mode = "container:" + ts_info["Id"]
+                if current["HostConfig"]["NetworkMode"] != expected_mode:
+                    raise RuntimeError("existing container is in a different network")
+                if (current["Config"].get("Image") != spec["image"]
+                    or current["Config"].get("User") != f"{uid}:{gid}"):
+                    raise RuntimeError("existing container has unexpected image or UID/GID")
+                helper_workload_command("workload-set-running", workload_id)
+                return {"ok": True, "status": "running", "container": name,
+                        "existing": True}
+            run(["docker", "rm", name])
+
+        args = salamander_docker_args(spec, roots, connector_id, uid, gid)
+        helper_workload_command("workload-set-starting", workload_id)
+        try:
+            run(args, timeout=90)
+            if not container_running(name):
+                raise RuntimeError("SalamanderRS exited immediately after start")
+            helper_workload_command("workload-set-running", workload_id)
+        except Exception:
+            info = inspect_container(name)
+            if info is not None:
+                validate_salamander_container(info, spec)
+                run(["docker", "rm", "-f", name], check=False)
+            helper_workload_command("workload-set-failed", workload_id)
+            raise
+        return {"ok": True, "status": "running", "container": name,
+                "existing": False}
+
+
+def workload_status(request):
+    workload_id = positive_int(request.get("workload_id"), "workload_id")
+    spec = load_workload(workload_id)
+    validated_salamander_spec(spec)
+    name = salamander_container_name(spec)
+    info = inspect_container(name)
+    if info is None:
+        return {"ok": True, "status": "stopped", "container": name,
+                "database_status": spec["status"]}
+    validate_salamander_container(info, spec)
+    return {"ok": True,
+            "status": "running" if info["State"]["Running"] else "stopped",
+            "container": name, "database_status": spec["status"]}
+
+
+def workload_stop(request):
+    workload_id = positive_int(request.get("workload_id"), "workload_id")
+    with WORKLOAD_LOCK:
+        spec = load_workload(workload_id)
+        validated_salamander_spec(spec)
+        name = salamander_container_name(spec)
+        info = inspect_container(name)
+        if info is None:
+            helper_workload_command("workload-set-stopped", workload_id)
+            return {"ok": True, "status": "stopped", "existing": False}
+        validate_salamander_container(info, spec)
+        helper_workload_command("workload-set-stopping", workload_id)
+        try:
+            if info["State"]["Running"]:
+                run(["docker", "stop", "--time", "20", name], timeout=40)
+            run(["docker", "rm", name])
+            helper_workload_command("workload-set-stopped", workload_id)
+        except Exception:
+            helper_workload_command("workload-set-failed", workload_id)
+            raise
+        return {"ok": True, "status": "stopped", "existing": True}
+
+
 class AgentHandler(socketserver.StreamRequestHandler):
 
     def send(self, data):
@@ -1607,6 +1917,18 @@ class AgentHandler(socketserver.StreamRequestHandler):
 
             operation = request.get("op")
 
+            if operation == "workload_start":
+                self.send(workload_start(request))
+                return
+
+            if operation == "workload_status":
+                self.send(workload_status(request))
+                return
+
+            if operation == "workload_stop":
+                self.send(workload_stop(request))
+                return
+
             if operation == "linux_identity_available":
                 self.send(linux_identity_available(request))
                 return
@@ -1615,7 +1937,7 @@ class AgentHandler(socketserver.StreamRequestHandler):
                 self.send({
                     "ok": True,
                     "service": "ai-platform-agent",
-                    "version": 13,
+                    "version": 14,
                 })
                 return
 
