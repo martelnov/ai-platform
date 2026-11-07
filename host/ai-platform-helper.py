@@ -223,7 +223,7 @@ def workload_set_status(workload_id, status):
         """
     )
 
-    if container != str(workload_id):
+    if container.splitlines()[:1] != [str(workload_id)]:
         die(f"cannot update workload {workload_id}")
 
 

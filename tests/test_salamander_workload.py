@@ -125,6 +125,17 @@ class WorkloadTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Docker daemon'):
             agent.inspect_container('ai-files-1')
 
+    def test_inspect_missing_container_case_insensitive(self):
+        for error in (
+            'error: no such object: ai-files-1',
+            'Error: No such container: ai-files-1',
+        ):
+            with self.subTest(error=error):
+                with patch.object(agent, 'run', return_value=SimpleNamespace(
+                    returncode=1, stdout='', stderr=error
+                )):
+                    self.assertIsNone(agent.inspect_container('ai-files-1'))
+
     @patch.object(agent, 'load_workload', return_value=workload())
     @patch.object(agent, 'validated_salamander_spec', return_value=(
         1, 1, 20000, 20000, 'test'

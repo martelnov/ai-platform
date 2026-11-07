@@ -1660,7 +1660,7 @@ def inspect_container(name):
     result = run(["docker", "inspect", name], check=False)
     if result.returncode != 0:
         error = result.stderr.strip()
-        if "No such object:" in error or "No such container:" in error:
+        if "no such object:" in error.lower() or "no such container:" in error.lower():
             return None
         raise RuntimeError(error or "Docker inspect failed")
     try:
