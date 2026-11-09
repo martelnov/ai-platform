@@ -1,8 +1,10 @@
 # AI Platform — architektura a dohodnuté principy
 
-**Stav návrhu:** 3. listopadu 2026  
+**Stav návrhu:** 9. listopadu 2026
 **Projekt:** `martelnov/ai-platform`  
-**Účel dokumentu:** zaznamenat dohodnuté cílové chování. **Neznamená to, že je vše již implementováno.** Aktuální stav kódu a ověřených funkcí je v [PROJECT_STATE.md](PROJECT_STATE.md).
+**Aktivní vývojová větev:** `feature/user-provisioning-fscrypt` (`ac3b99e`)
+**Související projekt:** `martelnov/SalamanderRS`, větev `web-v0.10` (`fa51575`)
+**Účel dokumentu:** zachytit cílová pravidla i již rozhodnutou technickou topologii. **Cílový návrh není automaticky implementovaný.** Ověřené funkce a otevřené úkoly jsou v [PROJECT_STATE.md](PROJECT_STATE.md).
 
 ## 1. Cíl
 
@@ -14,85 +16,102 @@ Hlavní zásady:
 
 1. **Tailscale je vstupní síťová vrstva.** Služby nevystavovat do veřejného internetu.
 2. **Jeden persistentní `ai-ts-<id>` na uživatele.** Jeho Tailscale identita a DNS zůstávají stabilní i mezi rezervacemi.
-3. **Rozcestník je dostupný stále; pracovní aplikace jsou on-demand.** API požadavek aplikaci automaticky nespustí.
+3. **Rozcestník je dostupný stále; pracovní aplikace jsou on-demand.** Rozcestník tvoří statické HTML/JS + malý Python launcher. API požadavek aplikaci automaticky nespustí.
 4. **O GPU rozhoduje centrální plánovač, ne aplikace ani uživatelský kontejner.** Bez rezervace aplikace GPU vůbec nedostane.
 5. **Data a konfigurace jsou mimo dočasné aplikační kontejnery.** Restart/recreate aplikace nesmí smazat uživatelskou práci.
 6. **Privilegované operace provádí host-agent na hostiteli.** Uživatelské služby nemají Docker socket ani root přístup na hostitele.
 7. **Projekt má být přenositelný na jiný server.** Hardware, limity a cesty nesmějí být napevno zakódovány do uživatelské logiky.
 
-## 2. Zamýšlená topologie
+## 2. Topologie: ověřený SalamanderRS a cílové rozšíření
 
 ```text
 Správce přes Tailscale
         |
-        +--> Tailscale Serve hostitele --> Control Plane (Python / FastAPI)
-                                             |       |
-                                             |       +--> PostgreSQL
-                                             +--> Unix socket --> Host-agent (root)
-                                                                    |
-Uživatel s nasdíleným Tailscale strojem                         správa Dockeru,
-        |                                                        mountů, fscrypt
+        +--> Tailscale Serve hostitele --> Control Plane (Python/FastAPI)
+                                                |        |
+                                                |        +--> PostgreSQL
+                                                +--> Unix socket --> Host-agent (root)
+                                                                      |
+Uživatel: sdílený Tailscale stroj                                   správa Dockeru,
+        |                                                             mountů, fscrypt
         v
-  ai-ts-<id>  [TRVALE]
-    - Tailscale node / identita / HTTPS
-    - velmi lehký rozcestník (cílový návrh)
+  ai-ts-<id> [TRVALE, HTTPS, stabilní identita]
         |
-        +--> Gateway API (Python, centrální) --> Host-agent
+        +--> HTTPS :443  --> 127.0.0.1:8080 --> ai-launcher-<id> [TRVALE]
+        |                                         - statický HTML/JS rozcestník
+        |                                         - malý Python HTTP/proxy
+        |                                         - HMAC identita konektoru
+        |                                                 |
+        |                                         Gateway API [centrální]
+        |                                          |               |
+        |                                        PostgreSQL    Host-agent
         |
-        +--> File manager          [ON DEMAND, bez GPU rezervace]
-        +--> ComfyUI               [ON DEMAND, 0/1/N GPU]
-        +--> Ollama / Open WebUI   [ON DEMAND, 0/1/N GPU]
-        +--> ACE-Step              [ON DEMAND, 0/1/N GPU]
-        +--> další služby          [ON DEMAND]
+        +--> HTTPS :8443 --> 127.0.0.1:8090 --> ai-files-<id> [ON DEMAND]
+                                                  SalamanderRS, bez GPU
+                                                  /data a /models per-user
+
+  DALŠÍ PLÁNOVANÉ ON-DEMAND SLUŽBY (dosud neintegrované):
+    ComfyUI                  0/1/N GPU
+    Ollama / Open WebUI      0/1/N GPU; nativní i kompatibilní API
+    ACE-Step                 podle režimu
+    další služby             podle profilu
 ```
 
-Na úrovni uživatelského přístupu je žádoucí sdílený síťový namespace aplikací s příslušným `ai-ts-<id>` (např. Docker `--network container:ai-ts-<id>`), aby jednotlivé služby nepotřebovaly veřejné porty na hostiteli. **Je to cílová topologie; současný host-agent zatím nemá kompletní orchestrace všech aplikací.**
+**Ověřená část:** `ai-ts-<id>`, launcher, HMAC Gateway API, Tailscale Serve na portech 443 a 8443 a utility workload SalamanderRS. Pro Salamander se používá Docker síťový namespace `--network container:ai-ts-<id>`; web funguje bez publikace hostitelských portů. Správce přes Tailscale má oddělený přístup k centrálnímu Control Plane.
 
-Tailscale konektor **nesmí spouštět Docker přímo**. Pouze obsluhuje webové požadavky a volá důvěryhodné centrální API. Host-agent vykoná povolenou operaci.
+**Cílová část:** obdobné on-demand připojení dalších aplikací a kompletní orchestrace 0/1/N GPU. Zda všechny budoucí aplikace mohou sdílet tutéž topologii a jak budou vyřešeny jejich porty, streaming a WebSockety, se musí teprve ověřit.
 
-## 3. Uživatelský konektor a rozcestník
+Tailscale konektor ani launcher **nesmějí přímo ovládat Docker**. Launcher přijímá uživatelské akce, autentizuje volání do Gateway a host-agent provádí pouze serverově autorizované operace.
 
-Při zřízení uživatele platforma vytvoří jeho Linux identitu, pracovní adresáře a trvalý Tailscale konektor `ai-ts-<id>`. Uživatel dostane jednou přístup k jeho zařízení prostřednictvím Tailscale machine sharing. Konkrétní automatizace pozvání se ještě musí ověřit; není předpokládána jako hotová.
+## 3. Uživatelský konektor, launcher, identita a rozcestník
 
-`ai-ts-<id>` běží i bez rezervace GPU. Má být **co nejmenší na RAM i CPU**. Rozcestník nabídne alespoň:
+Při provisioningu dostane uživatel Linux UID/GID, vlastní stromy DATA/MODELS a trvalý Tailscale uzel `ai-ts-<id>`. Konektor běží nezávisle na GPU rezervaci; sdílení zařízení pomocí Tailscale machine sharing je samostatný krok a plnou automatizaci pozvání ještě nemáme doloženou.
 
-| Funkce | Požadavek na GPU | Cílový provoz |
+**Rozcestník je technicky rozhodnut:** `gateway/index.html` (statické HTML/JavaScript) a `gateway/launcher.py` (malý Python HTTP server). Žádný nový Go aplikační server není potřeba; `gateway/main.go` zůstává historickým prototypem. Launcher běží jako `ai-launcher-<id>` a zprostředkuje pouze předem povolené API cesty.
+
+**Bezpečné napojení:** hostitelský launcher manager odvodí pro každý `provider_id` samostatný token pomocí HMAC-SHA256 z root klíče `/etc/ai-platform/secrets/launcher_auth.key`. Root klíč zůstává pouze na důvěryhodných částech platformy; launcher dostane odvozený token. Gateway vyžaduje `X-AI-Connector-ID` **společně** s `X-AI-Connector-Auth`, porovná HMAC v konstantním čase a z databáze dohledá povolený konektor a uživatele. Samotná hlavička s ID už není důkazem identity. Provozní revize dalších přístupových cest a izolace stále zbývá.
+
+**Tailscale Serve uživatele:** port 443 směruje na launcher (`127.0.0.1:8080`), port 8443 na SalamanderRS (`127.0.0.1:8090`). Manager má konfiguraci 8443 přidávat pouze při shodě očekávaných pravidel; nesmí přepsat jinou existující konfiguraci. U vypnutého SalamanderRS zůstává druhý Serve route definovaný, ale backend není dostupný a žádný požadavek jej automaticky nespustí.
+
+Rozcestník má nabízet:
+
+| Funkce | GPU | Stav / provoz |
 | --- | --- | --- |
-| Přehled dostupných služeb a jejich stavu | ne | stále dostupný |
-| Správa šifrování / odemykání úložišť | ne | lehké UI + centrální API |
-| Rezervační kalendář | ne | lehké UI + centrální API |
-| Správce souborů | ne | samostatná služba on-demand |
-| Správa modelů / LoRA | ne | podle možností aplikace, bez rezervace |
-| ComfyUI | ne při přípravě; ano pro GPU výpočet | jeden aplikační kontejner na instanci |
-| Ollama / Open WebUI | ne pro CPU režim; ano pro GPU | jeden aplikační kontejner na instanci |
-| ACE-Step | podle režimu práce | jeden aplikační kontejner na instanci |
+| Stav a ovládání SalamanderRS | ne | **Funguje:** Spustit, Otevřít, Ukončit |
+| Souborový přístup DATA/MODELS | ne | **Funguje v SalamanderRS:** pouze přidělené prostory |
+| Správa šifrování | ne | Backend dříve testován; dokončení / regrese UI zbývá |
+| Rezervační kalendář | ne | Plánované lehké UI přes centrální API |
+| Správa modelů / LoRA | ne | Návrh a integrace zbývají |
+| ComfyUI | 0/1/N | On-demand po implementaci GPU runtime |
+| Ollama / Open WebUI | 0/1/N | On-demand; API pouze během běhu |
+| ACE-Step | dle režimu | On-demand po integraci |
 
-**Technologie rozcestníku zatím není finálně vybrána.** Kandidátem je statické HTML poskytované pomocí Tailscale Serve a malý bezpečný backend pro akce; případně velmi malý Python HTTP proces. Samotné statické HTML nestačí pro bezpečné ovládání privilegovaných funkcí. Existující `gateway/main.go` je starý prototyp, nikoli žádoucí směr nového vývoje. Vlastní aplikační kód projektu chceme držet v Pythonu; externí AI produkty se nepřepisují.
+Tento výběr technologie rozcestníku a SalamanderRS již není otevřenou architektonickou otázkou.
 
-## 4. Životní cyklus aplikací a jejich API
+## 4. Životní cyklus workloadů a jejich API
 
-1. Uživatel otevře svůj **stále dostupný** rozcestník.
-2. V případě potřeby nejdříve odemkne odpovídající šifrované prostory.
-3. Ručně zvolí **Spustit** u konkrétní služby.
-4. Platforma ověří oprávnění, požadovaná úložiště a případnou rezervaci GPU a spustí aplikaci s odpovídajícími zdroji.
-5. Dokud aplikace běží, funguje její webové rozhraní **i původní API**. To platí zejména pro Ollamu používanou z VS Code, Visual Studia, Pythonu nebo jiných klientů.
-6. Po ručním zastavení je služba nedostupná. **Příchozí API volání ji nesmí samo probudit.**
+### Ověřený vzor: SalamanderRS
 
-Příklad toku pro Ollamu:
+1. Uživatel se připojí přes Tailscale k vlastnímu rozcestníku.
+2. Pro požadovaný šifrovaný prostor provede případně unlock (backend fscrypt byl testován dříve).
+3. Uživatel zvolí **Spustit**. Launcher předá požadavek centrální Gateway s HMAC autentizací.
+4. Gateway odvodí identitu konektoru a příslušný **utility workload** z PostgreSQL. Prohlížeč neposílá libovolné `user_id`, `connector_id`, `workload_id`, Docker parametry ani cestu k image.
+5. Host-agent validuje konfiguraci, UID/GID, image, mounty a aktuální Tailscale kontejner. Spustí izolovaný `ai-files-<id>` ve sdíleném network namespace. Viditelná úložiště: `/data` a `/models`, mapovaná z vlastních uživatelských stromů.
+6. **Otevřít** použije HTTPS `:8443`, nikoli veřejný port hostitele.
+7. **Ukončit** vede přes Gateway k agentovi, který provede Docker stop. SalamanderRS od commitu `fa51575` podporuje graceful shutdown po SIGTERM; otestované ukončení bez SIGKILL proběhlo přibližně za 4 sekundy. Chování během aktivního dlouhého přenosu je otevřený test.
 
-```text
-otevřít https://<uživatelův-tailscale-node>/
-    -> případně odemknout modely/data
-    -> ručně spustit Ollamu
-    -> externí klient zavolá Ollama /api/chat nebo /v1/chat/completions
-    -> po zastavení aplikace už API neodpovídá
-```
+Data zůstávají mimo dočasný aplikační kontejner. Výchozí Docker stop timeout u agenta je 20 sekund jako bezpečnostní pojistka; není to běžná naměřená doba ukončení. Při dlouhém zápisu je nutné výslovně testovat konzistenci a obnovení přenosu.
 
-Stabilní URL a porty se teprve stanoví. Proxy musí zachovat streamování (včetně dlouhotrvajících odpovědí) a pro aplikace typu ComfyUI také WebSockety. U vypnuté služby stačí chybová odpověď / nedostupný backend; **bez auto-startu**.
+### Cílový vzor: ComfyUI / Ollama / ACE-Step
 
-Aplikace po spuštění běží **v jednom aplikačním kontejneru**. Přechod mezi CPU-only a GPU režimem může vyžadovat její zastavení a opětovné vytvoření: Docker standardně neumí dodatečně přidělit GPU již vytvořenému kontejneru pouhou změnou CPU limitů. Pracovní data musí proto být persistentní. Zachování neuloženého stavu otevřeného editoru při přepnutí je dosud **otevřený implementační úkol**, ne garantovaná vlastnost.
+1. Uživatel ručně spustí službu a platforma ověří storage, rezervaci a dostupné zdroje.
+2. Kontejner získá CPU-only profil bez GPU nebo explicitně přidělených 1 až N GPU.
+3. Během běhu zůstává dostupné webové UI i nativní API; u Ollamy `/api/*` a kompatibilní `/v1/*`. Proxy musí zachovat streamování, pro ComfyUI WebSockety.
+4. Po ručním stop je backend nedostupný. **API požadavek jej nesmí automaticky probudit.**
 
-Automatické ukončování nečinných služeb je možnost do budoucna, **nikoli dohodnuté hotové pravidlo**. Nikdy nesmí ukončit probíhající výpočet nebo aktivní API požadavek.
+Na instanci počítáme s jedním aplikačním kontejnerem. Přechod CPU ↔ GPU pravděpodobně vyžaduje jeho recreate; persistentní data se zachovají, ale neuložený stav otevřeného UI zatím není garantován. Automatický idle shutdown zůstává jen možnou budoucí funkcí; nesmí přerušit aktivní výpočet nebo přenos.
+
+Stabilní URL/portová mapa *dalších* aplikací ještě není definitivně stanovena.
 
 ## 5. GPU a CPU plánování
 
@@ -137,7 +156,7 @@ Migrace `001_base.sql` obsahuje `gpu_devices` (včetně `gpu_uuid`) a `applicati
 - **Administrátor definuje, které konkrétní podadresáře smějí být šifrovatelné; uživatel si je sám inicializuje, odemyká, zamyká a mění heslo.**
 - fscrypt je vlastnost **reálného backing filesystemu**, ne logického názvu stromu DATA/MODELS.
 - Na základním `/AI/models` se fscrypt nepovoluje kvůli plánovanému sdílení/deduplikaci modelů; přesto **nesmíme zakázat fscrypt v celé větvi MODELS**. Šifrovaný root může ležet uvnitř připojeného jiného filesystemu, který fscrypt skutečně podporuje a je připravený.
-- Základní `010_user_encryption_roots.sql` blokuje překryvy mountů oběma směry. Nová `011_allow_encryption_under_mount.sql` má povolit **encryption root uvnitř již existujícího mountu** (např. mount `/private`, encryption `/private/secret`), ale dál odmítat stejnou cestu, mount uvnitř encryption rootu a dodatečný překrývající mount. Migrace `010` se zpětně nepřepisuje.
+- `010_user_encryption_roots.sql` původně blokovala překryvy mountů oběma směry. `011_allow_encryption_under_mount.sql` byla navržena tak, aby povolila **encryption root uvnitř již existujícího mountu** (např. mount `/private`, encryption `/private/secret`), ale dál odmítala stejnou cestu, mount uvnitř encryption rootu a dodatečný překrývající mount. **Skutečný stav migrace 011 v DB k 9. 11. ověřit**, neoznačovat automaticky za aplikovanou. Migrace `010` se zpětně nepřepisuje.
 - Před inicializací šifrování musí host-agent ověřit skutečný filesystem a jeho podporu/setup fscrypt. **To je nutné ještě prakticky otestovat i na podadresáři připojeného filesystemu.**
 - Soubory odemčené na serveru jsou dostupné hostitelskému `root`. Toto řešení **nechrání plaintext před administrátorem v době, kdy je úložiště odemčené**.
 
@@ -147,12 +166,15 @@ Vedle fscrypt se diskutovala podpora uživatelem vytvořeného přenositelného 
 
 ## 7. Bezpečnostní hranice
 
-- `root` na hostiteli a administrace platformy patří jedné důvěryhodné osobě.
-- Tailscale omezuje síťový dosah, ale **nenahrazuje vnitřní autorizaci**. Běžný uživatel nesmí ovládat jiného uživatele ani číst jeho data.
-- `gateway-api` musí ověřit, že volající konektor je skutečně důvěryhodný. Samotné uživatelsky podvrhnutelné HTTP hlavičky nejsou dostačující tam, kde existuje přímá interní cesta k API. Konkrétní mechanismus dosud čeká na návrh/ověření.
-- Administrativní identifikace z Tailscale Serve hlaviček je platná jen při vynucené důvěryhodné cestě přes proxy.
-- Uživatelská služba nesmí dostat Docker socket, přístup k PostgreSQL ani socket host-agenta; žádné privilegované kontejnery pro běžnou práci.
-- Veřejný GitHub je přípustný pro **zdrojový kód**, nikdy pro produkční hesla, klíče, autentizační tokeny či jiné secrets. Změna viditelnosti repozitáře nezaručuje čistou historii commitů.
+- `root` hostitele a administrace platformy patří jediné důvěryhodné osobě.
+- Tailscale zajišťuje síťový dosah, ale **nenahrazuje aplikační autorizaci**. Uživatel smí ovládat pouze své workloady a vidět jen přidělená data.
+- Pro ověřenou per-user cestu byl implementován **HMAC-SHA256 token odvozený pro konkrétní konektor**. Gateway validuje hlavičku `X-AI-Connector-Auth` proti `X-AI-Connector-ID` a pak ověřuje identitu v DB. Samotný `X-AI-Connector-ID` nesmí stačit.
+- Root klíč launcherů je secret mimo Git a mimo běžné uživatelské kontejnery. Ani odvozené tokeny nesmějí proniknout do HTML, logů nebo veřejné historie repozitáře.
+- `Tailscale-User-*` hlavičky pro centrální administraci smějí být důvěryhodné pouze při vynuceném průchodu přes správnou Tailscale Serve proxy.
+- Uživatelská služba nemá Docker socket, PostgreSQL credentials ani host-agent socket; nesmí dostat systémové rooty nebo adresáře jiného uživatele.
+- Host-agent musí validovat skutečný cílový Docker objekt a serverový stav, nejen ID z klientského požadavku. Změny DB ↔ Docker musejí mít bezpečné chování při částečném selhání.
+- Existující HMAC a testy **neznamenají dokončený audit** proti všem cestám, únikům tokenů, SSRF, chybám symlink/mount izolace a souběžným operacím.
+- Veřejné GitHub repozitáře jsou určené pro zdrojový kód, nikoli pro hesla, API klíče a jiné secrets; samotná změna viditelnosti repo historie nic nemaže.
 
 ## 8. Hardware a přenositelnost
 
@@ -160,14 +182,18 @@ Uvažovaná sestava pro GPU server je **Dell Precision T3610**, jeden **Xeon E5-
 
 Současné vývojové/testovací výpisy pocházejí ze serveru `ailab` s Ubuntu 24.04.5 LTS. Hardwarové parametry a skutečně instalované GPU je nutné vždy ověřit přímo na hostiteli. Software musí fungovat i na budoucím stroji s jiným počtem GPU.
 
-## 9. Co ještě výslovně není rozhodnuto
+## 9. Co ještě není rozhodnuto nebo dokončeno
 
-- Přesná realizace a rozměr trvale běžícího webového rozcestníku (statika + backend vs. minimální Python server).
-- Definitivní URL/portová mapa jednotlivých API; musí zachovat Ollama API bez automatického spuštění.
-- Bezpečný mechanismus propojení per-user konektoru, Gateway API a host-agenta a způsob prokázání identity.
-- Implementace multi-GPU alokace, sdílené CPU cgroup, podmínky přechodu CPU ↔ GPU a ukládání rozpracovaného UI stavu.
-- Konkrétní produkt správce souborů a správce modelů; podporované aplikace se mají přidávat bez přepisování jádra platformy.
+- Definitivní URL/portová mapa dalších on-demand aplikací, jejich streaming, WebSockety a případné proxy limity.
+- GPU scheduler a cgroup pravidla pro 0/1/N GPU, sdílenou nízkou CPU kvótu a přechod CPU ↔ GPU.
+- Pravidla pro bezpečný stop při dlouhém obnovitelném přenosu, když klient právě zapisuje.
+- Reprodukovatelné sestavení image SalamanderRS z Git commitu a mapování aktuálního image tagu na DB. Na testovacím serveru proběhla jednorázová ruční výměna tagu `0.10.0-7804126` za `0.10.0-sigterm`; čistá instalace to zatím neřeší.
+- Ověření stavu migrací 011/012/013 proti databázi, případně nová migrace pro image; staré aplikované migrace neměnit.
+- Dokončení rezervačního kalendáře, integrace správy modelů/LoRA a dalších AI aplikací.
+- **Automatické nasazení a aktualizace z GitHubu** je cílový požadavek na přenositelnost, ale instalátor se bude řešit až později.
+
+**Již rozhodnuto:** technologie rozcestníku (statické HTML/JS + Python launcher), HMAC autentizace konektorů a SalamanderRS jako první správce souborů on-demand.
 
 ## 10. Pravidlo pro další vývoj
 
-Před každou větší změnou porovnat **aktuální kód na GitHubu** s **aktuálním stavem běžícího serveru**. Nikdy nepokládat plánované chování za již hotové jen proto, že existuje databázová tabulka nebo ukázkové HTML. Po ověření funkce doplnit [PROJECT_STATE.md](PROJECT_STATE.md) a zdokumentovat rozhodnutí, které změnilo architekturu.
+Před každou větší změnou porovnat **kód aktuální vývojové větve na GitHubu** s **aktuálním stavem běžícího serveru**. Nikdy nepokládat plánované chování za již hotové jen proto, že existuje databázová tabulka nebo ukázkové HTML. Po ověření funkce doplnit [PROJECT_STATE.md](PROJECT_STATE.md) a zdokumentovat rozhodnutí, které změnilo architekturu.

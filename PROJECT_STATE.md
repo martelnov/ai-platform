@@ -1,157 +1,165 @@
 # AI Platform — aktuální stav a předání práce
 
-**Stav k:** 3. listopadu 2026  
-**Repozitář:** https://github.com/martelnov/ai-platform (veřejná větev `main`)  
+**Stav k:** 9. listopadu 2026
+**Repozitář:** https://github.com/martelnov/ai-platform
+**Vývojová větev:** `feature/user-provisioning-fscrypt`, commit `ac3b99e` (push potvrzen 9. 11. 2026)
+**Související SalamanderRS:** https://github.com/martelnov/SalamanderRS, větev `web-v0.10`, commit `fa51575`
 **Pracovní adresář na testovacím serveru:** `/AI/apps/ai-platform`  
 **Související dokument:** [ARCHITECTURE.md](ARCHITECTURE.md)
 
-> **Důležité rozlišení:** „V repozitáři“ ≠ „nasazeno na serveru“ ≠ „otestováno“. Tento dokument vychází z veřejného zdrojového kódu a z terminálových výsledků předaných během konverzace do 3. 11. 2026. Není to automatický monitoring. U míst označených „ověřit“ chybí aktuální výpis hostitele. Při přechodu do další konverzace na něj lze navázat bez opakovaného zkoumání celé historie.
+> **Rozlišení stavů:** „v Gitu“ ≠ „nasazeno“ ≠ „integračně otestováno“. Tento dokument vychází z doložených výpisů serveru `ailab` do 9. 11. 2026. Není to průběžný monitoring. Aktuálně popsaná integrace je ve **vývojových větvích**, nikoli automaticky v `main`. Před nasazením na další stroj ověřit DB migrace, sestavení image, secrets a skutečnou konfiguraci hostitele.
 
 ## 1. Shrnutí jednou stránkou
 
-Platforma už má **centrální Python/FastAPI Control Plane, PostgreSQL, Python Gateway API, privilegovaný host-agent, zřizování uživatelských adresářů, framework pro mounty a fscrypt**. V databázi existují tabulky pro budoucí plánování GPU a kontejnerové workloady. Host-agent umí vytvořit **persistentní Tailscale konektor** `ai-ts-<id>`.
+AI Platform má **Python/FastAPI Control Plane, PostgreSQL, Gateway API, privilegovaný host-agent, provisioning Linux UID/GID, mounty, fscrypt a persistentní uživatelské Tailscale konektory**. Pro uživatele funguje lehký **statický HTML/JavaScript rozcestník** obsluhovaný Python launcherem `ai-launcher-<id>`.
 
-**Není ještě hotové jednotné uživatelské rozhraní `ai-ts-<id>` ani obecný runtime pro spouštění ComfyUI, Ollamy, ACE-Step a správce souborů on-demand**. Existující Go gateway je prototyp, který chceme nahradit lehkým řešením ve sjednoceném Pythonovém projektu; nelze jej bez ověření nasazení jen smazat. Rezervační datový model existuje, plnohodnotné přidělování 0/1/N GPU a sdílená CPU kvóta jsou další fáze.
+**SalamanderRS je první skutečně integrovaná aplikace on-demand.** Na `ailab` byl ověřen start, otevření přes Tailscale Serve i stop z rozcestníku. Pro testovací konektor běží rozcestník přes HTTPS 443 a Salamander přes oddělený HTTPS 8443; interně jde o porty 8080 a 8090 ve sdíleném síťovém namespace Tailscale konektoru. Aplikace dostává pouze uživatelské `/data` a `/models`, nikoli data ostatních.
 
-**Bezprostředně rozpracovaný krok:** migrace `011_allow_encryption_under_mount.sql` (asymetrické překryvy fscrypt rootů a mountů). V posledním doloženém výstupu z `ailab` byl soubor vytvořen, ale hlášen jako `??` (untracked); následné zařazení do Gitu, aplikování do DB a testy nejsou výstupem uživatele potvrzené. Na veřejném `main` k okamžiku kontroly migrace 011 nebyla (HTTP 404). **Nepovažovat ji za aplikovanou!**
+**Identita konektoru je autentizována HMAC-SHA256**, nikoli samotnou hlavičkou `X-AI-Connector-ID`. Gateway ověřuje token a identitu dohledává v databázi; uživatelské rozhraní neposílá libovolné ID uživatele ani workloadu. Kořenový klíč je mimo Git v `/etc/ai-platform/secrets/launcher_auth.key`; per-konektor launcher dostává jen odvozený token.
+
+**Důležitá provozní oprava:** SalamanderRS nově zpracovává SIGTERM s graceful shutdown. Testovací stop z rozcestníku se zkrátil přibližně z 23,59 s na 4 s; Docker potvrdil `exitCode=0` bez SIGKILL. Konkrétní chování při aktivním velkém přenosu ještě není ověřeno.
+
+**Ještě nejsou hotové:** obecné spouštění ComfyUI, Ollamy/Open WebUI a ACE-Step; plánování 0/1/N GPU a společný nízký CPU fond; zcela reprodukovatelné sestavení/registrace nového Salamander image při čisté instalaci. Automatický instalátor z GitHubu je budoucí požadavek, ale nyní se neimplementuje.
+
+**Git k 9. 11. 2026:** AI Platform `ac3b99e` na `feature/user-provisioning-fscrypt`, SalamanderRS `fa51575` na `web-v0.10`. Oba pracovní stromy byly uživatelem doloženy jako čisté a synchronizované s `origin`. Větve `main` nebyly měněny.
 
 ## 2. Stav podle komponent
 
-| Oblast | Stav | Co je doloženo / co chybí |
+| Oblast | Stav | Doloženo / zbývá |
 | --- | --- | --- |
-| Struktura projektu | **V Gitu** | `compose.yml`, `control-plane/`, `db/migrations/`, `host/`, `gateway/`, `install/`, `templates/`. |
-| PostgreSQL | **V Gitu; v minulosti testováno** | `postgres:18-bookworm`, databáze `ai_platform`, konfigurace přes Compose a secret soubor. Aktuální běh ověřit. |
-| Control Plane | **V Gitu; dříve testováno** | FastAPI + administrace, identity přes Tailscale Serve, uživatelé, secrets, mounty a definice encryptable rootů. Aktuální běh ověřit. |
-| Gateway API | **V Gitu; fscrypt API testováno** | Python FastAPI, `/health`, `/v1/me`, `/v1/storage`, fscrypt operace; není ještě úplnou obecnou gateway pro spouštění a proxy všech aplikací. |
-| Host-agent | **V Gitu; v minulosti testováno** | Python služba na Unix socketu `/run/ai-platform/agent.sock`; verze `13` v kódu; mount operace, fscrypt operace a vytvoření Tailscale konektoru. Aktuální verzi na hostu ověřit. |
-| Linux UID/GID a uživatelské adresáře | **Implementace + dřívější testy** | `host/ai-platform-helper.py`; adresáře v DATA a MODELS; pro testovacího uživatele byl provisioning ověřován. |
-| Nativní FS quotas | **Schéma + helper** | `filesystem_quotas`; helper umí `setquota` a stav. Neprohlašovat za plně automatizované bez integračního testu. |
-| Mounty | **Schéma + backend, testováno dílčím způsobem** | `user_mounts`, host-agent `apply/remove/status`, admin UI; lokální adresáře jsou přidělovány administrátorem. Dodat regresní testy pro překryvy, sítě a chybové stavy. |
-| fscrypt | **Backend otestován na testovacím rootu** | Přes Gateway API ověřeny `status`, `enable`, `lock`, `unlock`, `change-passphrase`; po změně hesla staré odmítnuto, nové přijato. UI pro uživatele zatím není dokončeno. |
-| `011_allow_encryption_under_mount.sql` | **Lokální rozpracovaná migrace** | Soubor prokazatelně existoval na serveru, ale nebyl naposledy prokazatelně commitnut ani spuštěn v DB. |
-| Tailscale `ai-ts-<id>` | **Provisioning v kódu** | Trvalý kontejner `tailscale/tailscale`, persistentní state, `unless-stopped`, při provisioningu se auth key odstraní. Skutečný seznam a stav kontejnerů ověřit přes Docker. |
-| Per-user webový rozcestník | **Návrh / prototyp** | `gateway/main.go`, `gateway/index.html`; chybí finální lehké uživatelské UI a jeho bezpečné napojení v konektoru. |
-| Runtime aplikací (ComfyUI, Ollama, ACE-Step, file manager) | **Cíl, neprokázáno jako hotové v novém projektu** | On-demand start/stop, API proxy, 0/1/N GPU, CPU-only profily a vazba na vlastní storage jsou rozpracované zadání. |
-| GPU scheduler | **DB návrh, runtime zbývá** | `gpu_devices`, `reservations.gpu_count`, `workloads`, `workload_gpus`; aktuální detekci GPU a kolizní plánování je třeba teprve ověřit/implementovat. |
+| PostgreSQL | **Používáno v integračním testu** | Z DB se zjišťoval Salamander workload; image v `applications` byla lokálně aktualizována. Plný audit migrací před čistou instalací zbývá. |
+| Control Plane | **V kódu; dříve testováno** | FastAPI administrace, uživatelé, identity, secrets, mounty a fscrypt. Aktuální kompletní regresní test UI zbývá. |
+| Gateway API | **Nasazeno a testováno** | HMAC ověření konektoru; přes launcher ověřeny `/api/me` (HTTP 200) a `/api/salamander`. Start/stop jsou autorizovány serverově vůči uživateli/workloadu v DB. |
+| Host-agent | **Nasazeno a testováno pro Salamander** | Privilegovaný Unix socket, validace spec/UID/GID, docker start/stop a stav workloadu. Stop používá `docker stop --time 20`; Graceful SIGTERM řeší proces SalamanderRS. |
+| Linux UID/GID, DATA a MODELS | **Implementováno; otestováno dílčím způsobem** | Per-user prostory `/AI/data/users/<username>` a `/AI/models/users/<username>`; v Salamander připojeny jako `/data`, `/models`. |
+| Native filesystem quotas | **Schéma + helper** | `filesystem_quotas` a host helper; automatické vynucení ve všech scénářích neprokázáno. |
+| Mounty | **Schéma a backend; dílčí testy** | `user_mounts`, agent apply/remove/status. Vyžaduje regresní testy překryvů a chybových stavů. |
+| fscrypt | **Backend dříve otestován** | `status`, `enable`, `lock`, `unlock`, `change-passphrase`; stav UI a migrace 011/012 ověřit proti aktuální DB. |
+| Tailscale `ai-ts-<id>` | **Nasazeno a testováno** | Persistentní konektory; Tailscale Serve pro rozcestník na 443 a Salamander na 8443; druhý port se nastavuje bez přepsání prvního. |
+| Python launcher `ai-launcher-<id>` | **Nasazeno a testováno** | Statický HTML+JS rozcestník; proxy k centrální Gateway; HMAC token každého konektoru; funkční uživatelské akce. Systemd timer `ai-platform-launchers.timer` byl po nasazení obnoven a ověřen jako aktivní. |
+| SalamanderRS `ai-files-<id>` | **Nasazeno a testováno pro testovacího uživatele** | Jedna utility aplikace on-demand bez GPU, sdílený network namespace s Tailscale, vlastní DATA/MODELS; Start/Otevřít/Stop funguje. |
+| Salamander Docker image | **Lokálně sestaveno; reprodukovatelnost zbývá** | Na `ailab` je použit image `ai-platform-salamander:0.10.0-sigterm`, odvozený z `0.10.0-7804126`. V DB byl tag změněn ručně. Čistý instalátor to dosud nezajistí. |
+| ComfyUI, Ollama, ACE-Step | **Plán** | Bez dokončeného on-demand runtime, API proxy, websocket/streaming testů a přidělování GPU. |
+| GPU scheduler a sdílená CPU kvóta | **Datový model / návrh** | `gpu_devices`, `reservations`, `workloads`, `workload_gpus` existují; komplexní scheduler a cgroup vynucení dosud neověřeny. |
 
-## 3. Kód a jeho odpovědnosti
+## 3. Kód a odpovědnosti
 
 ```text
-compose.yml                           PostgreSQL, control-plane, gateway-api, Docker sítě
-control-plane/app/main.py            administrátorské webové UI/API
-control-plane/app/gateway_api.py     uživatelská identita konektoru, fscrypt API
-control-plane/app/db.py             připojení k PostgreSQL
-host/ai-platform-agent.py           privilegovaný Unix-socket agent (root)
-host/ai-platform-helper.py          provisioning Linux adresářů a FS quotas
-db/migrations/001_base.sql          základ: uživatelé, aplikace, GPU, storage, connectors
-db/migrations/002_runtime.sql       reservations, workloads, workload_gpus
-db/migrations/003...010...          provisioning, identity, secrets, mounty, fscrypt
-gateway/main.go                      starý Go prototyp webové gateway
-gateway/Dockerfile                   sestavení Go prototypu (není v Compose jako služba)
-gateway/index.html                  minimální nefunkční HTML prototyp odemykání
-install/configure-tailscale-serve.sh Tailscale Serve pro centrální control plane
+compose.yml                            PostgreSQL, Control Plane, gateway-api, sítě a secrets
+control-plane/app/main.py             centrální administrace / API
+control-plane/app/gateway_api.py      uživatelské API, per-user autorizace, Salamander akce
+control-plane/app/connector_auth.py   HMAC-SHA256 ověření identit konektorů
+control-plane/app/db.py              PostgreSQL připojení
+gateway/index.html                   statický HTML/JS uživatelský rozcestník
+gateway/launcher.py                  lehký HTTP launcher a proxy /api/*
+host/ai-platform-launcher-manager.py  lifecycle launcherů a Tailscale Serve portů
+host/ai-platform-agent.py            privilegovaný host-agent pro Docker, mounty, fscrypt
+host/ai-platform-helper.py           provisioning UID/GID, kvóty a stav workloadů
+db/migrations/001...013...           databázový model včetně utility Salamander runtime
+tests/test_connector_auth.py         HMAC validace
+tests/test_salamander_*.py           Gateway, launcher, Serve a runtime testy
+gateway/main.go                      starší Go prototyp; nepovažovat za aktuální rozcestník
+install/configure-tailscale-serve.sh  Tailscale Serve pro hostitelský Control Plane
 ```
 
-`compose.yml` publikuje Control Plane pouze na `127.0.0.1:8080`. PostgreSQL není publikováno přímo. V konfiguraci jsou sítě `ai-control` (internal), `ai-frontend` a `ai-gateway` (internal). `gateway-api` běží jako samostatná Python služba a komunikuje s host-agentem přes připojený Unix socket. Produkční secrets jsou mimo repozitář v `/etc/ai-platform/secrets/`.
+Pro uživatele se vytváří `ai-ts-<id>` (trvalý Tailscale uzel) a `ai-launcher-<id>` (malý Python HTTP proces). Po ručním startu může existovat `ai-files-<id>` pro SalamanderRS; ten sdílí síťový namespace `ai-ts-<id>`. Tailscale Serve na 443 směruje na `127.0.0.1:8080`, HTTPS 8443 na `127.0.0.1:8090`. Tato lokální TCP spojení jsou uvnitř namespace konektoru; nejde o veřejné vystavení portů hostitele.
 
-Důležité: skript `install/configure-tailscale-serve.sh` obsluhuje **hostitelský Control Plane**, nikoli automaticky rozcestník uvnitř každého `ai-ts-<id>`. Tyto dva scénáře nezaměňovat.
+Gateway API komunikuje s host-agentem prostřednictvím jeho Unix socketu. Uživatelské aplikace nemají dostat Docker socket, databázová hesla ani host-agent socket. HMAC root secret je mimo repozitář v `/etc/ai-platform/secrets/`. `install/configure-tailscale-serve.sh` patří k **hostitelskému** Control Plane; nastavení Serve pro jednotlivé uživatele spravuje launcher manager.
 
-## 4. DB: migrace a význam
+## 4. Databázové migrace a image
 
-V kontrolované větvi `main` jsou přítomné migrace `001_base.sql` až `010_user_encryption_roots.sql`, včetně:
+Základní migrace `001`–`010` pokrývají uživatele, aplikace, GPU, rezervace, mounty a fscrypt. Dřívější dokumentace (3. 11.) uváděla `011_allow_encryption_under_mount.sql` jako rozpracovanou; **její aktuální aplikovaný stav spolu s případnou migrací 012 ověřit** v `schema_migrations`, nikoli odhadovat podle souborů.
 
-- `001_base`: `users`, `hosts`, `applications`, `application_profiles`, `gpu_devices`, `storage_resources`, `filesystem_quotas`, `user_connectors` a další základní entity;
-- `002_runtime`: `reservations` s `gpu_count`, `workloads` s režimy `preparation`/`gpu`, `workload_gpus`;
-- `003`–`007`: provisioning, pravidla username, šifrované platform secrets, admin a identita Tailscale connectoru;
-- `008_user_mounts`, `009_user_mounts_extensions_only`: přidělené mounty a pravidla kořenových cest;
-- `010_user_encryption_roots`: správa encryptable rootů a současné přísné překryvové triggery.
+Novější schéma obsahuje migraci `013_salamander_utility.sql`, která zavádí utility profil/workload pro SalamanderRS. Původně registrovaný image tag byl `ai-platform-salamander:0.10.0-7804126`; na testovacím serveru byl později **ručně** změněn v `applications.image` na `ai-platform-salamander:0.10.0-sigterm`, aby se ověřila oprava SIGTERM.
 
-**Záměr `011`:** povolit definici fscrypt rootu *pod již existujícím* uživatelským mountem, ne na shodné cestě nebo opačným směrem. Opačný trigger zakazující dodatečné překrývání mounty se ponechává. Při `enable` je potřeba ověřit skutečnou podporu fscrypt na výsledném backing filesystemu. Základní `/AI/models` se fscrypt nezapíná, ale vhodný připojený filesystem uvnitř MODELS může šifrování podporovat.
+**Důsledek:** čisté nasazení zatím nemusí použít opravenou binárku. Před dalším serverem je potřeba definovat reprodukovatelný build (ideálně z konkrétního Git commitu SalamanderRS) a idempotentní novou migraci či konfigurační postup pro aktuální image. **Neměnit zpětně již aplikovanou migraci `013` ani `010`.**
 
-Před migrací porovnat serverový soubor, repository a DB `schema_migrations`; **nepřepisovat aplikovanou migraci 010**.
+Záměr fscrypt pravidel zůstává: encryption root může ležet *uvnitř předem existujícího mountu* se skutečnou podporou fscrypt; nesmí být totožný s mount bodem ani dovolit opačný nebezpečný překryv. Stav a testy tohoto pravidla na současné DB ještě ověřit.
 
-## 5. Co už bylo skutečně otestováno
+## 5. Doložené integrační testy
 
-Z terminálové historie 3. listopadu 2026:
+### Dříve ověřené storage a fscrypt
 
-- `ai-platform-agent` odpovídal ve verzi `13` (po změnách kolem změny hesla).
-- Gateway API obsloužilo zkušební fscrypt root uživatele `test` pod `/AI/data/users/test/private2`.
-- Ověřen byl úspěšný `lock` a `unlock`.
-- Po `change-passphrase` se **staré heslo odmítlo**, zatímco **nové fungovalo**.
-- Změny Gateway API pro změnu hesla byly commitnuty a pushnuty (`ca505d7` podle posledního doloženého push výstupu). Neznamená to automaticky, že serverový pracovní strom je nyní čistý.
-- `/AI/models` byl zjištěn jako filesystem bez setupu fscrypt, což bylo **záměrně ponecháno** kvůli sdílení/deduplikaci modelů.
+- Gateway API obsloužilo testovací fscrypt root `/AI/data/users/test/private2`.
+- `lock` a `unlock` fungovaly; po změně hesla se staré odmítlo a nové přijalo.
+- Základní `/AI/models` zůstal bez fscrypt setupu kvůli zamýšlenému sdílení/deduplikaci modelů.
 
-Testovací hesla, skutečné secret values, tokeny a osobní Tailscale identifikátory **do dokumentace ani Git historie neukládat**.
+### SalamanderRS / Stage 2 (listopad 2026)
 
-## 6. Právě dohodnuté chování — ještě k implementaci
+- **34 testů AI Platform** úspěšných; kontrola `git diff --check`, Python compile a `docker compose config -q` také prošly.
+- HMAC tokeny tří launcherů byly lokálně ověřeny jako platné; `/api/me` odpovědělo HTTP 200, `/api/salamander` vrátilo registrovaný workload a stav.
+- Z prohlížeče byl úspěšně opakovaně otestován **Spustit / Otevřít / Ukončit** u SalamanderRS.
+- Naměřeno přibližně **3,9 s start**, původně **23,59 s stop** a po doplnění Tokio graceful SIGTERM přibližně **4 s stop**.
+- Docker eventy při novém stop: `SIGTERM`, `exitCode=0`, `destroy`; neobjevil se `SIGKILL`. Izolovaný test kontejneru trval zhruba 2,4 s.
+- **27 testů SalamanderRS** a release build prošly před synchronizací/rebase větve. Po rebase na `7804126` vznikl commit `fa51575`; **kompletní rebuild a retest nového HEAD dosud nejsou v doložených výpisech**.
+- Zkontrolován Git push a čisté pracovní stromy obou vývojových větví k 9. 11. 2026.
 
-1. **Konektor:** trvale běží jeden lehký `ai-ts-<id>` na uživatele, nezávisle na GPU rezervaci. Bez Docker socketu.
-2. **Uživatelské UI:** lehký rozcestník vždy dostupný; správa šifrování a rezervační kalendář mohou používat centrální API bez dalšího trvale běžícího aplikačního kontejneru.
-3. **Ostatní služby:** file manager, ComfyUI, Ollama/Open WebUI, ACE-Step se spouštějí **ručně on-demand**. Nezůstávají trvale běžet, pokud je uživatel nepotřebuje.
-4. **Ollama API:** dostupné na stabilní adrese **až po ručním spuštění**. API volání nesmí Ollamu samo spustit. Zachovat nativní i OpenAI-kompatibilní endpointy a streamování.
-5. **Bez rezervace:** aplikační kontejner **nemá GPU**, náročné AI aplikace sdílejí **jednu společnou** nízkou CPU kvótu (počáteční návrh 1 logické CPU celkem). Správce souborů, rozcestník a řídicí služby mají samostatné prostředky.
-6. **S rezervací:** kontejner získá 1 konkrétní GPU, případně 2 GPU současně pro jediného uživatele/aplikaci, nebo obecně N. Žádná aplikace nemůže GPU obejít.
-7. **Jeden kontejner:** pro běžící instanci služby nepoužívat oddělený Comfy editor a GPU worker; podle potřeby se před přidělením/odebráním GPU instance bezpečně znovu vytvoří.
-8. **Storage:** mounty připravuje host-agent; admin spravuje lokální zdroje, uživatel může pracovat jen se svými oprávněními a případnými povolenými síťovými zdroji.
-9. **Technologie:** vlastní serverový projekt sjednotit na Pythonu. Současný Go web nahradit, ale neodstraňovat bez ověření skutečného nasazení.
+**Ještě netestováno:** graceful shutdown během dlouhého zápisu/obnovitelného přenosu, možná reakce klienta a konzistence souboru; čistá instalace a sestavení přes nový Git HEAD; kompletní izolace v dalších uživatelských kontejnerech.
 
-Podrobná architektura: [ARCHITECTURE.md](ARCHITECTURE.md).
+Do repozitáře, dokumentace ani logů pro sdílení **nepatří tajné klíče, hesla, HMAC tokeny, skutečné hodnoty secrets ani soukromé identifikátory Tailscale**.
+
+## 6. Dohodnuté chování a stav implementace
+
+1. **Persistentní Tailscale identita** `ai-ts-<id>` bez vazby na GPU rezervaci — **implementováno**.
+2. **Stále dostupný lehký rozcestník**: statické HTML/JS + Python `ai-launcher-<id>` — **implementováno a ověřeno**.
+3. **Bezpečná identita konektoru:** centrální Gateway vyžaduje platný HMAC token odvozený pro konkrétní `provider_id`; ID uživatele/workloadu se určuje na serveru — **implementováno pro aktuální cestu**. Zbývá širší bezpečnostní audit.
+4. **Správce souborů:** SalamanderRS on-demand, bez GPU, s vlastními `/data` a `/models`, Tailscale HTTPS 8443 — **otestováno**.
+5. **Správa šifrování a rezervační kalendář:** centrální API bez nového persistentního kontejneru; dokončení a regresní testy UI **zbývají**.
+6. **Ollama, ComfyUI a ACE-Step:** ruční start/stop, stabilní URL pouze během běhu, žádný implicitní start při API volání; zachovat streaming a WebSockety — **plán**.
+7. **CPU bez rezervace:** všechny výpočetní AI workloady dohromady v jednom malém fondu (původně ekvivalent 1 logického CPU); utility služby mimo tento fond — **plán**.
+8. **GPU rezervace:** přidělení konkrétního 0/1/N GPU s atomickou alokací podle dostupnosti — **plán**.
+9. **Persistentní data:** host-agent připravuje mounty; aplikační kontejner lze bezpečně znovu vytvořit bez ztráty uložené práce — **u SalamanderRS zčásti implementováno**.
+10. **Přenositelnost:** výsledný systém se má dát automaticky instalovat a aktualizovat z GitHubu, bez hardcoded hardware; **požadavek platí, instalátor se zatím nevyvíjí**.
+
+Podrobnosti: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## 7. Otevřené úkoly v doporučeném pořadí
 
-| Pořadí | Úkol | Stav dokončení |
+| Pořadí | Úkol | Stav |
 | --- | --- | --- |
-| **1** | Ověřit `git status`, obsah a přítomnost `011_allow_encryption_under_mount.sql` na serveru a DB `schema_migrations`. | neověřeno |
-| **2** | Projít obsah `011`, bezpečně ji aplikovat do PostgreSQL a otestovat oba směry overlap pravidla + případ fscrypt pod vhodným mountem. | neověřeno / nedokončeno |
-| **3** | Po testech commitnout a pushnout `011`, aktualizovat tento dokument. | nehotovo |
-| **4** | Inventura běžících `ai-ts-<id>`, jejich Tailscale Serve konfigurace a případného nyní běžícího Go webu, **bez restartu**. | neověřeno |
-| **5** | Navrhnout minimální rozcestník a bezpečnou per-user autentizaci vůči `gateway-api`; ověřit dostupnost přes Tailscale, bez výchozího Go stacku. | plán |
-| **6** | Zprovoznit ovládání šifrování v uživatelském rozcestníku a ruční on-demand start/stop aplikace. | plán |
-| **7** | Stabilní Ollama API přes konektor: po ručním startu funguje, při vypnutí se nic samo nespouští; otestovat streaming. | plán |
-| **8** | Sdílený nízký CPU fond, 0/1/N GPU, atomické rezervace a per-user kontejnerový runtime. | plán |
-| **9** | Regresní testy mountů, fscrypt, oprávnění, kvót a cleanup při chybách. | plán |
-| **10** | Volitelný VeraCrypt vault a jeho přenos/synchronizace. | později, jen návrh |
+| **1** | Rerun `cargo test` a `cargo build --release --locked` pro SalamanderRS **po rebase**, tedy HEAD `fa51575`; zkontrolovat čistý tree. | neověřeno po rebase |
+| **2** | Zajistit reprodukovatelný Docker build aktuálního SalamanderRS a soulad image tagu s `applications.image` při nové instalaci; nepozměňovat starou migraci `013`. | otevřeno |
+| **3** | Ověřit aktuální `schema_migrations` v DB proti migracím `011`, `012`, `013`; doplnit případnou novou migraci pro image. | otevřeno |
+| **4** | Otestovat ukončení SalamanderRS **během velkého obnovitelného přenosu**, reakci klienta a bezpečný restart. | otevřeno |
+| **5** | Regresní a bezpečnostní testy: přístupové hranice více uživatelů, HMAC, fscrypt, mounty, kvóty a chybové stavy DB/agent. | částečně |
+| **6** | Dokončit a otestovat uživatelské UI pro fscrypt a rezervační kalendář. | otevřeno |
+| **7** | Zavést další aplikace on-demand: Ollama/Open WebUI, ComfyUI, ACE-Step; stabilní API, streaming, WebSockety. | plán |
+| **8** | Implementovat sdílenou nízkou CPU kvótu a scheduler 0/1/N GPU s rezervacemi. | plán |
+| **9** | Po dokončení vývojových komponent připravit **automatickou instalaci a aktualizace z GitHubu** pro nový server. | později, zatím nespouštět |
+| **10** | Volitelná podpora VeraCrypt vaultů a synchronizace rozdílů. | později |
 
-### Bezpečnostní oblasti před nasazením dalším uživatelům
+### Bezpečnostní oblasti před rozšířením na další uživatele
 
-- Ujistit se, že `Tailscale-User-*` hlavičky nemůže podvrhnout klient přistupující k Control Plane mimo důvěryhodný Tailscale Serve.
-- `gateway_api.py` nyní identifikuje konektor podle `X-AI-Connector-ID`. Je nutné vyřešit důvěryhodnou cestu/ověření volajícího, aby interní kontejner nemohl impersonovat cizí identitu.
-- U aplikací v uživatelském namespace zabránit přístupu k PostgreSQL, Docker socketu, host-agent socketu a datům ostatních uživatelů.
-- U root operací řešit chybové stavy, kdy se změna na hostu provede, ale DB transakce nepotvrdí.
-- Jednorázově prověřit veřejnou historii Git repozitáře na omylem commitnuté secrets; Tailscale sám takový únik neřeší.
+- Kontrolovat identitu na všech per-user Gateway akcích. HMAC token nyní chrání aktuální connector API; **neznamená to dokončený bezpečnostní audit celé platformy**.
+- Ujistit se, že proxy klient nemůže podvrhnout `Tailscale-User-*` hlavičky mimo důvěryhodný Tailscale Serve.
+- Nepustit Docker socket, PostgreSQL přístup, agent socket ani hostitelské rooty do neprivilegovaného workloadu.
+- Prověřit race conditions a rollback při rozdílném stavu Dockeru, host-agenta a PostgreSQL.
+- Vyloučit zpřístupnění cizích uživatelských stromů a nechtěné mounty přes symlinky nebo nesprávné UID/GID.
+- Prověřit veřejnou historii Git repozitářů kvůli případným únikům secrets.
 
-## 8. Bezpečné první ověřovací příkazy po navázání
+## 8. Bezpečné první ověření po navázání
 
-Příkazy níže **nic nemění**. Výstupy předává správce hostitele; nikdy neposílat skutečné secret values.
-
-```bash
-cd /AI/apps/ai-platform
-
-git status --short
-git log -1 --oneline
-ls -l db/migrations/011_allow_encryption_under_mount.sql
-
-docker compose --env-file /etc/ai-platform/compose.env -f compose.yml ps
-
-docker ps -a --filter 'name=ai-ts-' \
-    --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
-```
-
-Databázové ověření verze migrací až po kontrole stavu Compose:
+Příkazy v tomto oddílu jsou pouze informativní; nevypisovat hodnoty secrets.
 
 ```bash
-docker compose --env-file /etc/ai-platform/compose.env -f compose.yml \
-    exec -T postgres \
-    psql -U ai_platform -d ai_platform \
-    -c 'SELECT version, applied_at FROM schema_migrations ORDER BY version;'
+sudo git -C /AI/apps/ai-platform status --short --branch
+git -C /home/administrator/SalamanderRS-git status --short --branch
+sudo docker compose --env-file /etc/ai-platform/compose.env -f /AI/apps/ai-platform/compose.yml ps
+sudo docker ps -a --filter 'name=ai-ts-' --filter 'name=ai-launcher-' --filter 'name=ai-files-'
 ```
 
-Následná úprava DB nebo restart služeb **až po vyhodnocení výstupů**, ne naslepo.
+Pro ověření migrační historie (až po kontrole názvu služby a Compose):
+
+```bash
+sudo docker compose --env-file /etc/ai-platform/compose.env -f /AI/apps/ai-platform/compose.yml     exec -T postgres psql -U ai_platform -d ai_platform     -c 'SELECT version, applied_at FROM schema_migrations ORDER BY version;'
+```
+
+Při nesouladu migrací, image nebo běžících kontejnerů **nedělat automatický restart ani SQL změny bez další kontroly**.
 
 ## 9. Pravidla vedení dokumentace a předávání konverzací
 
 - Po dokončení většího celku aktualizovat **[PROJECT_STATE.md](PROJECT_STATE.md)**: co je implementováno, co bylo otestováno, jakým commitem a co zbývá.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** aktualizovat jen při změně rozhodnutých pravidel nebo zásadního technického návrhu.
-- Při práci vždy rozlišovat stav `main`, necommitnuté změny na `ailab` a stav běžících služeb.
+- Při práci vždy rozlišovat stav `main`, aktivní vývojové větve, lokální změny na `ailab` a stav běžících služeb.
 - Do další konverzace stačí odkázat na repo, tyto dva dokumenty a dodat poslední `git status`/důležité runtime výpisy. Historii chatu není nutné znovu kopírovat.
 - Tyto dokumenty **nenahrazují aktuální výpis serveru** a neověřují se samy; aktualizovat je průběžně a při blížícím se limitu konverzace připravit přesný checkpoint.
