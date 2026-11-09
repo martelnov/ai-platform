@@ -14,12 +14,15 @@ API_URL = os.environ.get(
 ).rstrip("/")
 
 PROVIDER_ID = os.environ.get("AI_CONNECTOR_PROVIDER_ID", "")
+AUTH_TOKEN = os.environ.get("AI_CONNECTOR_AUTH_TOKEN", "")
 
 INDEX = Path(__file__).with_name("index.html")
 
 
 if not PROVIDER_ID:
     raise SystemExit("AI_CONNECTOR_PROVIDER_ID is required")
+if not AUTH_TOKEN:
+    raise SystemExit("AI_CONNECTOR_AUTH_TOKEN is required")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -44,6 +47,48 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def salamander_gateway_request(self, suffix="", method="GET"):
+        request = Request(
+            API_URL + "/v1/salamander" + suffix,
+            headers={
+                "X-AI-Connector-ID": PROVIDER_ID,
+                "X-AI-Connector-Auth": AUTH_TOKEN,
+                "Accept": "application/json",
+            },
+            method=method,
+            data=b"" if method == "POST" else None,
+        )
+        try:
+            with urlopen(request, timeout=125) as upstream:
+                status = upstream.status
+                result = upstream.read(65537)
+        except HTTPError as exc:
+            status = exc.code
+            result = exc.read(65537)
+        except (URLError, TimeoutError, OSError) as exc:
+            self.log_error("Salamander Gateway unavailable: %s", exc)
+            return self.respond(503, b'{"error":"Gateway unavailable"}',
+                                "application/json")
+        if len(result) > 65536:
+            return self.respond(503, b'{"error":"Gateway response too large"}',
+                                "application/json")
+        return self.respond(status, result, "application/json")
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        action = {
+            "/api/salamander/start": "start",
+            "/api/salamander/stop": "stop",
+        }.get(path)
+        if not action:
+            return self.respond(404, b"not found\n", "text/plain; charset=utf-8")
+        # Custom header prevents ordinary cross-site HTML form POSTs.
+        if (self.headers.get("X-AI-Platform-Action") != action
+                or self.headers.get("Content-Length", "0") != "0"):
+            return self.respond(403, b'{"error":"Invalid request"}',
+                                "application/json")
+        return self.salamander_gateway_request("/" + action, method="POST")
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
 
@@ -61,11 +106,15 @@ class Handler(BaseHTTPRequestHandler):
                 "text/html; charset=utf-8"
             )
 
+        if path == "/api/salamander":
+            return self.salamander_gateway_request()
+
         if path == "/api/me":
             request = Request(
                 API_URL + "/v1/me",
                 headers={
                     "X-AI-Connector-ID": PROVIDER_ID,
+                    "X-AI-Connector-Auth": AUTH_TOKEN,
                     "Accept": "application/json",
                 },
             )

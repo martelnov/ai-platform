@@ -4,6 +4,7 @@ import socket
 from fastapi import FastAPI, HTTPException, Request
 
 from app.db import db_connect
+from app.connector_auth import require_connector_auth
 
 
 app = FastAPI(
@@ -59,6 +60,7 @@ def health():
 
 
 def resolve_connector_identity(conn, request: Request):
+    require_connector_auth(request)
     provider_id = request.headers.get("x-ai-connector-id")
 
     if not provider_id:
@@ -84,6 +86,7 @@ def resolve_connector_identity(conn, request: Request):
               ON u.id = uc.user_id
             WHERE uc.provider_id = %s
               AND uc.enabled = true
+              AND u.enabled = true
             """,
             (provider_id,),
         )
@@ -467,55 +470,93 @@ async def gateway_storage_unlock(
 
 @app.get("/v1/me")
 def gateway_me(request: Request):
-    provider_id = request.headers.get("x-ai-connector-id")
-
-    if not provider_id:
-        raise HTTPException(
-            status_code=401,
-            detail="Connector identity required",
-        )
-
     with db_connect() as conn:
+        return resolve_connector_identity(conn, request)
+
+
+# User file manager: the browser never supplies a workload/user ID. The
+# connector identity is authenticated, then the associated workload is
+# resolved exclusively from PostgreSQL.
+def salamander_workload_for(request: Request):
+    require_connector_auth(request)
+    with db_connect() as conn:
+        identity = resolve_connector_identity(conn, request)
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT
-                    uc.id,
-                    uc.provider_id,
-                    uc.node_name,
-                    uc.status,
-                    uc.address,
-                    uc.dns_name,
-                    u.id,
-                    u.username
-                FROM user_connectors uc
-                JOIN users u
-                  ON u.id = uc.user_id
-                WHERE uc.provider_id = %s
-                  AND uc.enabled = true
+                SELECT w.id
+                FROM workloads w
+                JOIN application_profiles p
+                  ON p.id = w.application_profile_id
+                JOIN applications a
+                  ON a.id = p.application_id
+                WHERE w.user_id = %s
+                  AND w.connector_id = %s
+                  AND w.mode = 'utility'
+                  AND a.code = 'salamander'
+                  AND a.enabled = true
+                  AND p.enabled = true
                 """,
-                (provider_id,),
+                (identity["user"]["id"], identity["connector"]["id"]),
             )
+            rows = cur.fetchall()
+    if len(rows) > 1:
+        raise HTTPException(status_code=409,
+                            detail="Multiple Salamander workloads configured")
+    return identity, (rows[0][0] if rows else None)
 
-            row = cur.fetchone()
 
-    if not row:
-        raise HTTPException(
-            status_code=403,
-            detail="Unknown connector",
+def salamander_url(identity):
+    # DNS name comes from the database (Tailscale connector), never the browser.
+    import re
+    name = (identity["connector"].get("dns_name") or "").lower().rstrip(".")
+    if not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net", name):
+        return None
+    return f"https://{name}:8443/"
+
+
+def salamander_agent_call(operation, workload_id):
+    try:
+        result = host_agent_request(
+            {"op": operation, "workload_id": workload_id},
+            timeout=120,
         )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503,
+                            detail="Host workload service unavailable") from exc
+    if not isinstance(result, dict) or not result.get("ok"):
+        error = result.get("error", "Workload operation failed") if isinstance(result, dict) else "Workload operation failed"
+        raise HTTPException(status_code=409, detail=str(error)[:250])
+    return result
 
-    return {
-        "connector": {
-            "id": row[0],
-            "provider_id": row[1],
-            "node_name": row[2],
-            "status": row[3],
-            "address": row[4],
-            "dns_name": row[5],
-        },
-        "user": {
-            "id": row[6],
-            "username": row[7],
-        },
-    }
+
+@app.get("/v1/salamander")
+def gateway_salamander_status(request: Request):
+    identity, workload_id = salamander_workload_for(request)
+    if workload_id is None:
+        return {"registered": False, "status": "unavailable", "url": None}
+    result = salamander_agent_call("workload_status", workload_id)
+    if result.get("status") not in ("running", "stopped"):
+        raise HTTPException(status_code=503, detail="Unexpected workload state")
+    return {"registered": True, "status": result["status"],
+            "url": salamander_url(identity)}
+
+
+@app.post("/v1/salamander/start")
+def gateway_salamander_start(request: Request):
+    identity, workload_id = salamander_workload_for(request)
+    if workload_id is None:
+        raise HTTPException(status_code=404, detail="Salamander not registered")
+    result = salamander_agent_call("workload_start", workload_id)
+    return {"registered": True, "status": result.get("status"),
+            "url": salamander_url(identity)}
+
+
+@app.post("/v1/salamander/stop")
+def gateway_salamander_stop(request: Request):
+    identity, workload_id = salamander_workload_for(request)
+    if workload_id is None:
+        raise HTTPException(status_code=404, detail="Salamander not registered")
+    result = salamander_agent_call("workload_stop", workload_id)
+    return {"registered": True, "status": result.get("status"),
+            "url": salamander_url(identity)}

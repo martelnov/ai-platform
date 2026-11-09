@@ -85,9 +85,11 @@ services:
       DB_NAME: ai_platform
       DB_USER: ai_platform
       DB_PASSWORD_FILE: /run/secrets/postgres_password
+      CONNECTOR_AUTH_KEY_FILE: /run/secrets/launcher_auth_key
 
     secrets:
       - postgres_password
+      - launcher_auth_key
 
     volumes:
       - type: bind
@@ -105,6 +107,9 @@ secrets:
 
   master_key:
     file: /etc/ai-platform/secrets/master.key
+
+  launcher_auth_key:
+    file: /etc/ai-platform/secrets/launcher_auth.key
 
 networks:
   control:

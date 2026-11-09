@@ -49,6 +49,23 @@ h1 {
 .service small {
     color: #666;
 }
+
+.actions {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-top: 0.8rem;
+}
+
+.actions button {
+    padding: 0.45rem 0.65rem;
+    cursor: pointer;
+}
+
+.actions button:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
 </style>
 
 </head>
@@ -73,8 +90,13 @@ h1 {
 <section class="services">
 
     <div class="service">
-        <strong>Správce souborů</strong>
-        <small>Spouštění připravujeme</small>
+        <strong>Správce souborů – SalamanderRS</strong>
+        <small id="salamander-status" role="status">Zjišťuji stav…</small>
+        <div class="actions">
+            <button id="salamander-start" disabled>Spustit</button>
+            <button id="salamander-open" disabled>Otevřít</button>
+            <button id="salamander-stop" disabled>Ukončit</button>
+        </div>
     </div>
 
     <div class="service">
@@ -125,12 +147,77 @@ fetch('/api/me', {cache: 'no-store'})
         document.getElementById(
             'status'
         ).textContent = 'Připojeno';
+        refreshSalamander();
     })
     .catch(() => {
         document.getElementById(
             'status'
         ).textContent = 'Nepodařilo se načíst identitu.';
     });
+
+const salamanderStart = document.getElementById('salamander-start');
+const salamanderOpen = document.getElementById('salamander-open');
+const salamanderStop = document.getElementById('salamander-stop');
+const salamanderStatus = document.getElementById('salamander-status');
+let salamanderUrl = null;
+let salamanderBusy = false;
+
+function updateSalamander(data) {
+    const registered = data.registered === true;
+    const running = registered && data.status === 'running';
+    salamanderUrl = running && typeof data.url === 'string' ? data.url : null;
+    salamanderStart.disabled = salamanderBusy || !registered || running;
+    salamanderOpen.disabled = salamanderBusy || !running || !salamanderUrl;
+    salamanderStop.disabled = salamanderBusy || !running;
+    salamanderStatus.textContent = !registered ? 'Aplikace zatím není přiřazena' :
+        running ? 'Spuštěno' : data.status === 'stopped' ? 'Vypnuto' :
+        'Stav: ' + data.status;
+}
+
+async function refreshSalamander() {
+    try {
+        const response = await fetch('/api/salamander', {cache: 'no-store'});
+        if (!response.ok) throw new Error('Nelze načíst stav aplikace');
+        updateSalamander(await response.json());
+    } catch (error) {
+        salamanderStart.disabled = true;
+        salamanderOpen.disabled = true;
+        salamanderStop.disabled = true;
+        salamanderStatus.textContent = error.message;
+    }
+}
+
+async function changeSalamander(action) {
+    salamanderBusy = true;
+    salamanderStart.disabled = true;
+    salamanderOpen.disabled = true;
+    salamanderStop.disabled = true;
+    salamanderStatus.textContent = action === 'start' ? 'Spouštím…' : 'Ukončuji…';
+    try {
+        const response = await fetch('/api/salamander/' + action, {
+            method: 'POST',
+            headers: {'X-AI-Platform-Action': action},
+            cache: 'no-store',
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || result.error || 'Operace selhala');
+        salamanderBusy = false;
+        updateSalamander(result);
+    } catch (error) {
+        salamanderBusy = false;
+        await refreshSalamander();
+        salamanderStatus.textContent = 'Chyba: ' + error.message;
+    }
+}
+
+salamanderStart.addEventListener('click', () => changeSalamander('start'));
+salamanderStop.addEventListener('click', () => changeSalamander('stop'));
+salamanderOpen.addEventListener('click', () => {
+    if (salamanderUrl && !salamanderOpen.disabled) {
+        window.open(salamanderUrl, '_blank', 'noopener,noreferrer');
+    }
+});
+
 </script>
 
 </body>

@@ -1,13 +1,29 @@
 #!/usr/bin/env python3
 
+import hashlib
+import hmac
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 
 IMAGE = "ai-platform-launcher:latest"
 GATEWAY_NETWORK = "ai-gateway"
 GATEWAY_API = "http://gateway-api:8080"
+AUTH_KEY_FILE = Path("/etc/ai-platform/secrets/launcher_auth.key")
+
+
+def connector_token(provider_id):
+    key = AUTH_KEY_FILE.read_bytes().strip()
+    if len(key) < 32:
+        raise RuntimeError("Connector authentication key is too short")
+    return hmac.new(
+        key,
+        b"ai-platform-connector-v1\0" + provider_id.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
 
 
 def run(*args, check=True):
@@ -104,6 +120,34 @@ def ensure_tailscale_serve(ts_name):
 
     print(f"{ts_name}: Serve configured")
 
+
+def ensure_salamander_serve(ts_name):
+    """Configure a separate HTTPS port without replacing launcher Serve."""
+    result = run("docker", "exec", ts_name, "tailscale", "serve", "status", "--json")
+    config = json.loads(result.stdout.strip() or "{}") or {}
+    if not isinstance(config, dict):
+        raise RuntimeError("Unexpected Tailscale Serve configuration")
+    tcp = config.get("TCP") or {}
+    web = config.get("Web") or {}
+    if "8443" in tcp or any(
+        site.endswith(":8443") for site in web
+    ):
+        if not (tcp.get("8443") or {}).get("HTTPS"):
+            raise RuntimeError(f"{ts_name}: HTTPS 8443 already used for another service")
+        if not any(
+            site.endswith(":8443") and
+            (settings.get("Handlers") or {}).get("/", {}).get("Proxy")
+                == "http://127.0.0.1:8090"
+            for site, settings in web.items()
+            if isinstance(settings, dict)
+        ):
+            raise RuntimeError(f"{ts_name}: HTTPS 8443 has unexpected proxy")
+        return
+    run("docker", "exec", ts_name, "tailscale", "serve", "--bg",
+        "--https=8443", "http://127.0.0.1:8090")
+    print(f"{ts_name}: Salamander Serve configured")
+
+
 def ensure_launcher(connector_id):
     if connector_id <= 0:
         raise ValueError("Invalid connector ID")
@@ -136,6 +180,8 @@ def ensure_launcher(connector_id):
         raise RuntimeError(
             "Tailscale provider ID is missing"
         )
+
+    auth_token = connector_token(provider_id)
 
     # Ensure communication with central Gateway API.
     networks = ts["NetworkSettings"]["Networks"]
@@ -170,14 +216,20 @@ def ensure_launcher(connector_id):
             f"AI_GATEWAY_API_URL={GATEWAY_API}"
             in environment
         )
+        correct_token = (
+            f"AI_CONNECTOR_AUTH_TOKEN={auth_token}"
+            in environment
+        )
 
         if (
             current["State"]["Running"]
             and correct_network
             and correct_identity
             and correct_api
+            and correct_token
         ):
             ensure_tailscale_serve(ts_name)
+            ensure_salamander_serve(ts_name)
 
             print(
                 f"{launcher_name}: already running"
@@ -208,10 +260,12 @@ def ensure_launcher(connector_id):
         f"ai.platform.connector_id={connector_id}",
         "-e", f"AI_CONNECTOR_PROVIDER_ID={provider_id}",
         "-e", f"AI_GATEWAY_API_URL={GATEWAY_API}",
+        "-e", f"AI_CONNECTOR_AUTH_TOKEN={auth_token}",
         IMAGE,
     )
 
     ensure_tailscale_serve(ts_name)
+    ensure_salamander_serve(ts_name)
     print(f"{launcher_name}: created")
 
 
