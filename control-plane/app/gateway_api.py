@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 from app.db import db_connect
 from app.connector_auth import require_connector_auth
+from app.reservations import make_reservations_router
 
 
 app = FastAPI(
@@ -113,6 +114,9 @@ def resolve_connector_identity(conn, request: Request):
             "username": row[7],
         },
     }
+
+
+app.include_router(make_reservations_router(resolve_connector_identity))
 
 
 @app.get("/v1/storage")

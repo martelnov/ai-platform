@@ -22,12 +22,17 @@ class FastAPI:
         return lambda f: f
     def post(self, *args, **kwargs):
         return lambda f: f
+    def include_router(self, router):
+        pass
 http_stub.HTTPException = HTTPException
 http_stub.Request = type('Request', (), {})
 http_stub.FastAPI = FastAPI
 fake_db = types.ModuleType('app.db')
 fake_db.db_connect = lambda: None
-with patch.dict(sys.modules, {'fastapi': http_stub, 'app.db': fake_db}):
+fake_reservations = types.ModuleType('app.reservations')
+fake_reservations.make_reservations_router = lambda resolve_identity: None
+with patch.dict(sys.modules, {'fastapi': http_stub, 'app.db': fake_db,
+                              'app.reservations': fake_reservations}):
     from app import gateway_api
     from app import connector_auth
 
