@@ -1917,6 +1917,11 @@ class AgentHandler(socketserver.StreamRequestHandler):
 
             operation = request.get("op")
 
+            if operation in ("gpu_inventory_scan", "gpu_diagnostics"):
+                from gpu_agent_bridge import gpu_agent_operation
+                self.send(gpu_agent_operation(request))
+                return
+
             if operation == "workload_start":
                 self.send(workload_start(request))
                 return

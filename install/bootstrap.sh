@@ -73,6 +73,7 @@ apt-get install -y \
     fscrypt \
     nfs-common \
     openssl \
+    pciutils \
     python3-cryptography \
     python3-minimal \
     quota
@@ -314,6 +315,12 @@ log "Installing host agent"
 install -D -m 0755 \
     "$REPO_ROOT/host/ai-platform-agent.py" \
     /usr/local/lib/ai-platform/ai-platform-agent.py
+install -D -m 0755 \
+    "$REPO_ROOT/host/gpu_inventory_scan.py" \
+    /usr/local/lib/ai-platform/gpu_inventory_scan.py
+install -D -m 0644 \
+    "$REPO_ROOT/host/gpu_agent_bridge.py" \
+    /usr/local/lib/ai-platform/gpu_agent_bridge.py
 
 install -m 0644 \
     "$REPO_ROOT/install/systemd/ai-platform-agent.service" \
