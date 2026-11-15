@@ -66,6 +66,324 @@ h1 {
     cursor: default;
     opacity: 0.5;
 }
+
+/* GPU reservations: rendered inside the existing launcher, without libraries. */
+body.gpu-expanded {
+    max-width: 1240px;
+}
+
+body.gpu-expanded .services {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.gpu-panel {
+    margin: 2rem 0;
+    padding: 1.2rem;
+    border: 1px solid #d9e2ed;
+    border-radius: 12px;
+    background: #fff;
+}
+
+.gpu-panel[hidden] {
+    display: none;
+}
+
+.gpu-heading,
+.gpu-toolbar,
+.gpu-meta,
+.gpu-legend {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: .7rem;
+}
+
+.gpu-heading h2 {
+    margin: 0;
+}
+
+.gpu-help {
+    color: #555;
+    font-size: .92rem;
+    line-height: 1.5;
+}
+
+.gpu-toolbar {
+    margin-top: 1.2rem;
+    padding: .7rem;
+    border-radius: 8px;
+    background: #f0f4f9;
+}
+
+.gpu-toolbar-group {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .35rem;
+}
+
+.gpu-panel button {
+    cursor: pointer;
+    border: 1px solid #9aaac0;
+    background: #fff;
+    border-radius: 6px;
+    padding: .45rem .7rem;
+    color: #182534;
+}
+
+.gpu-panel button:hover:not(:disabled) {
+    border-color: #3265a4;
+}
+
+.gpu-panel button:focus-visible,
+.gpu-panel input:focus-visible,
+.gpu-panel select:focus-visible {
+    outline: 3px solid #6295db;
+    outline-offset: 2px;
+}
+
+.gpu-panel button:disabled {
+    opacity: .5;
+    cursor: default;
+}
+
+.gpu-toolbar button[aria-pressed="true"] {
+    color: #fff;
+    background: #24588c;
+    border-color: #24588c;
+}
+
+.gpu-range {
+    font-weight: 700;
+}
+
+.gpu-meta {
+    margin: .9rem 0 .5rem;
+}
+
+.gpu-legend {
+    justify-content: flex-start;
+    font-size: .85rem;
+    color: #444;
+}
+
+.gpu-legend span {
+    display: inline-flex;
+    gap: .3rem;
+    align-items: center;
+}
+
+.gpu-swatch {
+    display: inline-block;
+    width: .85rem;
+    height: .85rem;
+    border: 1px solid #a8a8a8;
+    border-radius: 3px;
+}
+
+.gpu-free {
+    background: #e1f5e6 !important;
+}
+
+.gpu-partial {
+    background: #fff1bf !important;
+}
+
+.gpu-full {
+    background: #f9d7da !important;
+}
+
+.gpu-offline {
+    background: #e6e6e6 !important;
+}
+
+.gpu-notice {
+    min-height: 1.4em;
+    color: #364657;
+    font-size: .9rem;
+}
+
+.gpu-calendar {
+    border: 1px solid #d9e2ed;
+    border-radius: 8px;
+    max-height: 560px;
+    overflow: auto;
+}
+
+.gpu-month-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(90px, 1fr));
+    min-width: 690px;
+}
+
+.gpu-weekday,
+.gpu-day-title {
+    padding: .65rem .35rem;
+    text-align: center;
+    font-size: .88rem;
+    background: #eaf0f7;
+    font-weight: 600;
+}
+
+.gpu-month-grid .gpu-month-cell {
+    text-align: left;
+    min-height: 86px;
+    margin: 2px;
+    padding: .55rem;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    font: inherit;
+}
+
+.gpu-month-cell small {
+    color: #374151;
+}
+
+.gpu-month-empty {
+    background: #f6f7f9;
+    margin: 2px;
+}
+
+.gpu-week-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(140px, 1fr));
+    min-width: 980px;
+    gap: 2px;
+    padding: 2px;
+}
+
+.gpu-day-column {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.gpu-day-column .gpu-day-title {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.gpu-day-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 3px;
+    padding: 3px;
+}
+
+.gpu-panel .gpu-slot {
+    text-align: left;
+    padding: .43rem .55rem;
+    font-size: .82rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: .4rem;
+}
+
+.gpu-slot strong {
+    white-space: nowrap;
+}
+
+.gpu-bottom {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.2rem;
+    margin-top: 1.4rem;
+}
+
+.gpu-box {
+    border: 1px solid #d9e2ed;
+    border-radius: 8px;
+    padding: 1rem;
+    min-width: 0;
+}
+
+.gpu-box h3 {
+    margin-top: 0;
+}
+
+.gpu-form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+    gap: .85rem;
+}
+
+.gpu-form-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: .3rem;
+    font-size: .9rem;
+}
+
+.gpu-form-grid input,
+.gpu-form-grid select {
+    font: inherit;
+    border-radius: 5px;
+    padding: .48rem;
+    border: 1px solid #aab7c6;
+    min-width: 0;
+}
+
+.gpu-panel .gpu-primary {
+    background: #24588c;
+    color: white;
+    border-color: #24588c;
+}
+
+.gpu-mine-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: .7rem;
+}
+
+.gpu-mine-toolbar h3 {
+    margin: 0;
+}
+
+.gpu-mine-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: .9rem;
+}
+
+.gpu-mine-filter select {
+    font: inherit;
+    border: 1px solid #aab7c6;
+    border-radius: 5px;
+    padding: .4rem;
+    background: #fff;
+}
+
+.gpu-reservation {
+    display: flex;
+    justify-content: space-between;
+    gap: .7rem;
+    align-items: center;
+    padding: .7rem 0;
+    border-bottom: 1px solid #e2e7ef;
+}
+
+.gpu-reservation small {
+    display: block;
+    color: #555;
+    margin-top: .2rem;
+}
+
+@media (max-width: 800px) {
+    body { margin: 1.5rem auto; }
+    .gpu-panel { padding: .75rem; }
+    body.gpu-expanded .services {
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    }
+    .gpu-bottom { grid-template-columns: 1fr; }
+    .gpu-month-grid { min-width: 560px; }
+}
 </style>
 
 </head>
@@ -121,9 +439,90 @@ h1 {
 
     <div class="service">
         <strong>Rezervace GPU</strong>
-        <small>Kalendář připravujeme</small>
+        <small>Plánování výpočetního času</small>
+        <div class="actions">
+            <button id="gpu-open" type="button" disabled>Otevřít kalendář</button>
+        </div>
     </div>
 
+</section>
+
+
+<section id="gpu-panel" class="gpu-panel" aria-labelledby="gpu-heading" hidden>
+    <div class="gpu-heading">
+        <h2 id="gpu-heading">Rezervační kalendář GPU</h2>
+        <button id="gpu-close" type="button">Zavřít kalendář</button>
+    </div>
+    <p class="gpu-help">
+        Rezervuje se počet GPU, nikoli konkrétní karta. Časy se zobrazují
+        podle časového pásma vašeho zařízení. Barva vyjadřuje nejvyšší
+        obsazenost v daném časovém úseku.
+    </p>
+    <div class="gpu-toolbar">
+        <div class="gpu-toolbar-group" aria-label="Zobrazení kalendáře">
+            <button type="button" data-gpu-view="day" aria-pressed="false">Den</button>
+            <button type="button" data-gpu-view="week" aria-pressed="true">Týden</button>
+            <button type="button" data-gpu-view="month" aria-pressed="false">Měsíc</button>
+        </div>
+        <div class="gpu-toolbar-group">
+            <button id="gpu-prev" type="button" aria-label="Předchozí období">←</button>
+            <button id="gpu-today" type="button">Dnes</button>
+            <button id="gpu-next" type="button" aria-label="Následující období">→</button>
+            <button id="gpu-reload" type="button">Obnovit</button>
+        </div>
+    </div>
+    <div class="gpu-meta">
+        <span id="gpu-range" class="gpu-range">–</span>
+        <span id="gpu-capacity">Načítám kapacitu…</span>
+    </div>
+    <div class="gpu-legend" aria-label="Legenda obsazenosti">
+        <span><i class="gpu-swatch gpu-free" aria-hidden="true"></i>Volno</span>
+        <span><i class="gpu-swatch gpu-partial" aria-hidden="true"></i>Částečně obsazeno</span>
+        <span><i class="gpu-swatch gpu-full" aria-hidden="true"></i>Plně obsazeno</span>
+    </div>
+    <p id="gpu-calendar-message" class="gpu-notice" role="status" aria-live="polite"></p>
+    <div id="gpu-calendar" class="gpu-calendar" aria-label="Obsazenost GPU"></div>
+
+    <div class="gpu-bottom">
+        <section class="gpu-box" aria-labelledby="gpu-form-heading">
+            <h3 id="gpu-form-heading">Nová rezervace</h3>
+            <form id="gpu-form">
+                <div class="gpu-form-grid">
+                    <label>Od
+                        <input id="gpu-start" type="datetime-local" step="1800" required>
+                    </label>
+                    <label>Do
+                        <input id="gpu-end" type="datetime-local" step="1800" required>
+                    </label>
+                    <label>Počet GPU
+                        <select id="gpu-count">
+                            <option value="1">1 GPU</option>
+                            <option value="2">2 GPU</option>
+                        </select>
+                    </label>
+                </div>
+                <p id="gpu-availability" class="gpu-notice" role="status" aria-live="polite"></p>
+                <button id="gpu-create" class="gpu-primary" type="submit">Rezervovat</button>
+                <p id="gpu-create-message" class="gpu-notice" role="status" aria-live="polite"></p>
+            </form>
+        </section>
+        <section class="gpu-box" aria-labelledby="gpu-mine-heading">
+            <div class="gpu-mine-toolbar">
+                <h3 id="gpu-mine-heading">Moje rezervace</h3>
+                <label class="gpu-mine-filter" for="gpu-mine-filter">
+                    Zobrazit:
+                    <select id="gpu-mine-filter">
+                        <option value="valid" selected>Platné</option>
+                        <option value="cancelled">Zrušené</option>
+                        <option value="past">Minulé</option>
+                        <option value="all">Všechno</option>
+                    </select>
+                </label>
+            </div>
+            <p id="gpu-mine-message" class="gpu-notice" role="status" aria-live="polite"></p>
+            <div id="gpu-mine"></div>
+        </section>
+    </div>
 </section>
 
 <script>
@@ -148,6 +547,7 @@ fetch('/api/me', {cache: 'no-store'})
             'status'
         ).textContent = 'Připojeno';
         refreshSalamander();
+        document.getElementById('gpu-open').disabled = false;
     })
     .catch(() => {
         document.getElementById(
@@ -218,6 +618,583 @@ salamanderOpen.addEventListener('click', () => {
     }
 });
 
+
+// GPU reservations: only the server decides whether a booking can be created.
+const gpuPanel = document.getElementById('gpu-panel');
+const gpuCalendar = document.getElementById('gpu-calendar');
+const gpuCalendarMessage = document.getElementById('gpu-calendar-message');
+const gpuAvailability = document.getElementById('gpu-availability');
+const gpuCreateMessage = document.getElementById('gpu-create-message');
+const gpuMine = document.getElementById('gpu-mine');
+const gpuMineMessage = document.getElementById('gpu-mine-message');
+const gpuMineFilter = document.getElementById('gpu-mine-filter');
+const gpuForm = document.getElementById('gpu-form');
+const gpuStartInput = document.getElementById('gpu-start');
+const gpuEndInput = document.getElementById('gpu-end');
+const gpuCountInput = document.getElementById('gpu-count');
+const GPU_HOUR = 60 * 60 * 1000;
+const GPU_HALF_HOUR = GPU_HOUR / 2;
+const GPU_DAY = 24 * GPU_HOUR;
+let gpuView = 'week';
+let gpuAnchor = new Date();
+let gpuCalendarSerial = 0;
+let gpuAvailabilitySerial = 0;
+let gpuMineSerial = 0;
+let gpuMineReservations = [];
+let gpuRefreshTimer = null;
+let gpuAvailabilityTimer = null;
+
+const gpuDateFormat = new Intl.DateTimeFormat('cs-CZ', {
+    day: 'numeric', month: 'short', year: 'numeric',
+});
+const gpuDateTimeFormat = new Intl.DateTimeFormat('cs-CZ', {
+    dateStyle: 'short', timeStyle: 'short',
+});
+const gpuTimeFormat = new Intl.DateTimeFormat('cs-CZ', {
+    hour: '2-digit', minute: '2-digit',
+});
+
+function gpuElement(tag, className, label) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (label !== undefined) element.textContent = String(label);
+    return element;
+}
+
+function gpuLocalMidnight(date) {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function gpuAddDays(date, days) {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function gpuWindow() {
+    let start;
+    let end;
+    if (gpuView === 'month') {
+        start = new Date(gpuAnchor.getFullYear(), gpuAnchor.getMonth(), 1);
+        end = new Date(gpuAnchor.getFullYear(), gpuAnchor.getMonth() + 1, 1);
+    } else if (gpuView === 'week') {
+        const midnight = gpuLocalMidnight(gpuAnchor);
+        start = gpuAddDays(midnight, -((midnight.getDay() + 6) % 7));
+        end = gpuAddDays(start, 7);
+    } else {
+        start = gpuLocalMidnight(gpuAnchor);
+        end = gpuAddDays(start, 1);
+    }
+    return {start, end};
+}
+
+function gpuWindowLabel(window) {
+    if (gpuView === 'month') {
+        return new Intl.DateTimeFormat('cs-CZ', {
+            month: 'long', year: 'numeric',
+        }).format(window.start);
+    }
+    if (gpuView === 'day') return gpuDateFormat.format(window.start);
+    return gpuDateFormat.format(window.start) + ' – ' +
+        gpuDateFormat.format(gpuAddDays(window.end, -1));
+}
+
+function gpuLocalInput(date) {
+    const part = value => String(value).padStart(2, '0');
+    return date.getFullYear() + '-' + part(date.getMonth() + 1) + '-' +
+        part(date.getDate()) + 'T' + part(date.getHours()) + ':' +
+        part(date.getMinutes());
+}
+
+function gpuAmbiguousLocalTime(date) {
+    // datetime-local cannot select which 02:30 is meant on the autumn DST day.
+    for (const direction of [-1, 1]) {
+        const other = new Date(date.getTime() + direction * GPU_HOUR);
+        if (other.getFullYear() === date.getFullYear() &&
+            other.getMonth() === date.getMonth() &&
+            other.getDate() === date.getDate() &&
+            other.getHours() === date.getHours() &&
+            other.getMinutes() === date.getMinutes()) return true;
+    }
+    return false;
+}
+
+function gpuParseLocalInput(value) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+    if (!match) throw new Error('Vyplň začátek i konec rezervace.');
+    const [year, month, day, hour, minute] = match.slice(1).map(Number);
+    const date = new Date(year, month - 1, day, hour, minute);
+    // Reject nonexistent local times when daylight-saving time changes.
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 ||
+        date.getDate() !== day || date.getHours() !== hour ||
+        date.getMinutes() !== minute) {
+        throw new Error('Zadaný místní čas neexistuje. Zvol jiný čas.');
+    }
+    if (gpuAmbiguousLocalTime(date)) {
+        throw new Error('Tento čas je při změně zimního času nejednoznačný. Zvol jinou hodinu.');
+    }
+    return date;
+}
+
+function gpuSelectedWindow(requireFuture = false) {
+    const start = gpuParseLocalInput(gpuStartInput.value);
+    const end = gpuParseLocalInput(gpuEndInput.value);
+    if (end <= start) throw new Error('Konec musí být později než začátek.');
+    // Availability API accepts at most 31 days (in UTC seconds).
+    if (end.getTime() - start.getTime() > 31 * GPU_DAY) {
+        throw new Error('V kalendáři lze najednou rezervovat nejvýše 31 dní.');
+    }
+    if (requireFuture && start.getTime() <= Date.now()) {
+        throw new Error('Rezervace musí začínat v budoucnosti.');
+    }
+    return {start, end};
+}
+
+function gpuApiError(result, status) {
+    if (status === 409) {
+        return 'Termín nebo požadovaný počet GPU již není dostupný. Obnov kalendář.';
+    }
+    if (result && typeof result.detail === 'string') return result.detail;
+    if (result && typeof result.error === 'string') return result.error;
+    return 'Požadavek selhal (HTTP ' + status + ').';
+}
+
+async function gpuRequest(path, options = {}) {
+    const response = await fetch(path, {
+        cache: 'no-store', credentials: 'same-origin', ...options,
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(gpuApiError(result, response.status));
+    if (!result || typeof result !== 'object') {
+        throw new Error('Gateway vrátila neplatnou odpověď.');
+    }
+    return result;
+}
+
+function gpuIntervalQuery(start, end) {
+    return new URLSearchParams({
+        starts_at: start.toISOString(), ends_at: end.toISOString(),
+    }).toString();
+}
+
+function gpuNormalizeTimeline(result) {
+    if (!Number.isInteger(result.total_gpus) || result.total_gpus < 0 ||
+        !Array.isArray(result.busy)) {
+        throw new Error('Neplatná data kalendáře.');
+    }
+    return {
+        total: result.total_gpus,
+        busy: result.busy.map(row => {
+            const start = Date.parse(row.starts_at);
+            const end = Date.parse(row.ends_at);
+            const count = row.gpu_count;
+            if (!Number.isFinite(start) || !Number.isFinite(end) ||
+                start >= end || !Number.isInteger(count) || count < 1) {
+                throw new Error('Neplatný záznam obsazenosti.');
+            }
+            return {start, end, count};
+        }),
+    };
+}
+
+async function gpuTimeline(window) {
+    // An October month can be 31 days + 1 hour in UTC due to DST. Split
+    // larger windows so every query respects the server's 31-day limit.
+    const chunks = [];
+    for (let from = window.start.getTime(); from < window.end.getTime();
+         from += 30 * GPU_DAY) {
+        const to = Math.min(from + 30 * GPU_DAY, window.end.getTime());
+        chunks.push(gpuRequest(
+            '/api/reservations/timeline?' + gpuIntervalQuery(new Date(from), new Date(to))
+        ));
+    }
+    const results = (await Promise.all(chunks)).map(gpuNormalizeTimeline);
+    if (results.some(row => row.total !== results[0].total)) {
+        throw new Error('Kapacita GPU se během načítání změnila.');
+    }
+    return {
+        total: results[0].total,
+        busy: results.flatMap(row => row.busy),
+    };
+}
+
+function gpuPeakBusy(bookings, start, end) {
+    const events = [];
+    for (const row of bookings) {
+        const left = Math.max(row.start, start);
+        const right = Math.min(row.end, end);
+        if (left < right) {
+            events.push([left, row.count], [right, -row.count]);
+        }
+    }
+    // At shared boundaries, ending bookings are removed first.
+    events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let used = 0;
+    let peak = 0;
+    for (const [, change] of events) {
+        used += change;
+        peak = Math.max(peak, used);
+    }
+    return peak;
+}
+
+function gpuOccupancyClass(used, total) {
+    if (total === 0) return 'gpu-offline';
+    if (used === 0) return 'gpu-free';
+    return used >= total ? 'gpu-full' : 'gpu-partial';
+}
+
+function gpuOccupancyText(used, total) {
+    if (total === 0) return 'GPU nedostupné';
+    return used === 0 ? 'Volno' : used + '/' + total + ' GPU';
+}
+
+function gpuPickSlot(start, end) {
+    gpuStartInput.value = gpuLocalInput(start);
+    gpuEndInput.value = gpuLocalInput(end);
+    gpuUpdateAvailability();
+    gpuForm.scrollIntoView({behavior: 'smooth', block: 'center'});
+    gpuStartInput.focus({preventScroll: true});
+}
+
+function gpuRenderMonth(window, timeline) {
+    const grid = gpuElement('div', 'gpu-month-grid');
+    for (const dayName of ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne']) {
+        grid.append(gpuElement('div', 'gpu-weekday', dayName));
+    }
+    const leading = (window.start.getDay() + 6) % 7;
+    for (let i = 0; i < leading; i++) {
+        grid.append(gpuElement('div', 'gpu-month-empty'));
+    }
+    for (let day = window.start; day < window.end; day = gpuAddDays(day, 1)) {
+        const next = gpuAddDays(day, 1);
+        const used = gpuPeakBusy(timeline.busy, day.getTime(), next.getTime());
+        const cell = gpuElement('button',
+            'gpu-month-cell ' + gpuOccupancyClass(used, timeline.total));
+        cell.type = 'button';
+        cell.append(gpuElement('strong', '', String(day.getDate())));
+        cell.append(gpuElement('small', '', gpuOccupancyText(used, timeline.total)));
+        cell.setAttribute('aria-label', gpuDateFormat.format(day) + ': ' +
+            gpuOccupancyText(used, timeline.total) + '. Otevřít den.');
+        const selectedDay = new Date(day);
+        cell.addEventListener('click', () => gpuSetView('day', selectedDay));
+        grid.append(cell);
+    }
+    return grid;
+}
+
+function gpuRenderSlots(day, timeline, step) {
+    const column = gpuElement('div', step === GPU_HOUR ? 'gpu-day-column' : 'gpu-day-grid');
+    const nextDay = gpuAddDays(day, 1);
+    const startMs = day.getTime();
+    const endMs = nextDay.getTime();
+    if (step === GPU_HOUR) {
+        const title = gpuElement('button', 'gpu-day-title', gpuDateFormat.format(day));
+        title.type = 'button';
+        title.addEventListener('click', () => gpuSetView('day', day));
+        column.append(title);
+    }
+    for (let time = startMs; time < endMs; time += step) {
+        const slotEnd = Math.min(time + step, endMs);
+        const used = gpuPeakBusy(timeline.busy, time, slotEnd);
+        const button = gpuElement('button',
+            'gpu-slot ' + gpuOccupancyClass(used, timeline.total));
+        button.type = 'button';
+        button.append(gpuElement('span', '', gpuTimeFormat.format(new Date(time))));
+        button.append(gpuElement('strong', '', gpuOccupancyText(used, timeline.total)));
+        button.title = gpuDateTimeFormat.format(new Date(time)) + ' – ' +
+            gpuTimeFormat.format(new Date(slotEnd)) + ': ' +
+            gpuOccupancyText(used, timeline.total);
+        const slotStartDate = new Date(time);
+        const slotEndDate = new Date(slotEnd);
+        button.disabled = time <= Date.now() ||
+            gpuAmbiguousLocalTime(slotStartDate) ||
+            gpuAmbiguousLocalTime(slotEndDate);
+        button.addEventListener('click', () => gpuPickSlot(slotStartDate, slotEndDate));
+        column.append(button);
+    }
+    return column;
+}
+
+function gpuRenderCalendar(window, timeline) {
+    let contents;
+    if (gpuView === 'month') {
+        contents = gpuRenderMonth(window, timeline);
+    } else if (gpuView === 'day') {
+        contents = gpuRenderSlots(window.start, timeline, GPU_HALF_HOUR);
+    } else {
+        contents = gpuElement('div', 'gpu-week-grid');
+        for (let day = window.start; day < window.end; day = gpuAddDays(day, 1)) {
+            contents.append(gpuRenderSlots(day, timeline, GPU_HOUR));
+        }
+    }
+    gpuCalendar.replaceChildren(contents);
+}
+
+async function gpuLoadCalendar() {
+    const serial = ++gpuCalendarSerial;
+    const window = gpuWindow();
+    document.getElementById('gpu-range').textContent = gpuWindowLabel(window);
+    gpuCalendarMessage.textContent = 'Načítám kalendář…';
+    try {
+        const timeline = await gpuTimeline(window);
+        if (serial !== gpuCalendarSerial || gpuPanel.hidden) return;
+        document.getElementById('gpu-capacity').textContent =
+            'Registrovaná kapacita: ' + timeline.total + ' GPU';
+        gpuRenderCalendar(window, timeline);
+        gpuCalendarMessage.textContent = 'Kliknutím na volný budoucí čas vybereš interval rezervace.';
+    } catch (error) {
+        if (serial !== gpuCalendarSerial || gpuPanel.hidden) return;
+        gpuCalendar.replaceChildren();
+        document.getElementById('gpu-capacity').textContent = 'Kapacita není dostupná';
+        gpuCalendarMessage.textContent = 'Kalendář se nepodařilo načíst: ' + error.message;
+    }
+}
+
+function gpuSetView(view, date = gpuAnchor) {
+    if (!['day', 'week', 'month'].includes(view)) return;
+    gpuView = view;
+    gpuAnchor = gpuLocalMidnight(date);
+    for (const button of document.querySelectorAll('[data-gpu-view]')) {
+        button.setAttribute('aria-pressed', String(button.dataset.gpuView === gpuView));
+    }
+    gpuLoadCalendar();
+}
+
+function gpuShiftWindow(direction) {
+    if (gpuView === 'month') {
+        gpuAnchor = new Date(gpuAnchor.getFullYear(),
+            gpuAnchor.getMonth() + direction, 1);
+    } else {
+        gpuAnchor = gpuAddDays(gpuAnchor, gpuView === 'week' ? 7 * direction : direction);
+    }
+    gpuLoadCalendar();
+}
+
+async function gpuUpdateAvailability() {
+    const serial = ++gpuAvailabilitySerial;
+    let window;
+    try {
+        window = gpuSelectedWindow();
+    } catch (error) {
+        gpuAvailability.textContent = error.message;
+        return;
+    }
+    gpuAvailability.textContent = 'Zjišťuji dostupnost…';
+    try {
+        const result = await gpuRequest('/api/reservations/availability?' +
+            gpuIntervalQuery(window.start, window.end));
+        if (serial !== gpuAvailabilitySerial || gpuPanel.hidden) return;
+        if (!Number.isInteger(result.available_gpus) ||
+            !Number.isInteger(result.total_gpus)) {
+            throw new Error('Neplatná dostupná kapacita.');
+        }
+        const requested = Number(gpuCountInput.value);
+        gpuAvailability.textContent = 'V celém intervalu dostupné: ' +
+            result.available_gpus + ' z ' + result.total_gpus + ' GPU.' +
+            (requested > result.available_gpus ? ' Požadovaný počet není volný.' : '');
+    } catch (error) {
+        if (serial === gpuAvailabilitySerial && !gpuPanel.hidden) {
+            gpuAvailability.textContent = 'Dostupnost nelze ověřit: ' + error.message;
+        }
+    }
+}
+
+function gpuQueueAvailability() {
+    clearTimeout(gpuAvailabilityTimer);
+    gpuAvailabilityTimer = setTimeout(gpuUpdateAvailability, 300);
+}
+
+// The API returns all own reservations; filtering happens locally.
+// Groups are disjoint: cancellation wins, then elapsed time determines the rest.
+// A reservation in progress is still valid until ends_at; completed is past.
+function gpuMineCategory(item, nowMs) {
+    if (item.status === 'cancelled') return 'cancelled';
+    if (item.status === 'completed') return 'past';
+    const endMs = new Date(item.ends_at).getTime();
+    if (!Number.isFinite(endMs)) throw new Error('Neplatné datum rezervace.');
+    return endMs > nowMs ? 'valid' : 'past';
+}
+
+function gpuVisibleMine(reservations, mode) {
+    if (mode === 'all') return reservations;
+    const nowMs = Date.now();
+    return reservations.filter(item => gpuMineCategory(item, nowMs) === mode);
+}
+
+function gpuRefreshMineView() {
+    const visible = gpuVisibleMine(gpuMineReservations, gpuMineFilter.value);
+    gpuRenderMine(visible);
+    gpuMineMessage.textContent = 'Zobrazeno: ' + visible.length +
+        ' z ' + gpuMineReservations.length;
+}
+
+function gpuRenderMine(reservations) {
+    gpuMine.replaceChildren();
+    if (!reservations.length) {
+        gpuMine.append(gpuElement('p', 'gpu-help', gpuMineReservations.length
+            ? 'Pro vybraný filtr nejsou žádné rezervace.'
+            : 'Zatím nemáš žádné rezervace.'));
+        return;
+    }
+    const labels = {
+        scheduled: 'Naplánováno', active: 'Probíhá',
+        cancelled: 'Zrušeno', completed: 'Dokončeno',
+    };
+    for (const reservation of reservations) {
+        const from = new Date(reservation.starts_at);
+        const to = new Date(reservation.ends_at);
+        if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
+            throw new Error('Neplatné datum rezervace.');
+        }
+        const row = gpuElement('div', 'gpu-reservation');
+        const info = gpuElement('div');
+        info.append(gpuElement('strong', '',
+            gpuDateTimeFormat.format(from) + ' – ' + gpuDateTimeFormat.format(to)));
+        const status = labels[reservation.status] || String(reservation.status);
+        info.append(gpuElement('small', '', reservation.gpu_count + ' GPU · ' + status));
+        row.append(info);
+        const id = Number(reservation.id);
+        if (reservation.status === 'scheduled' && from.getTime() > Date.now() &&
+            Number.isSafeInteger(id) && id > 0) {
+            const cancel = gpuElement('button', '', 'Zrušit');
+            cancel.type = 'button';
+            cancel.setAttribute('aria-label', 'Zrušit rezervaci od ' +
+                gpuDateTimeFormat.format(from));
+            cancel.addEventListener('click', () => gpuCancel(id, cancel));
+            row.append(cancel);
+        }
+        gpuMine.append(row);
+    }
+}
+
+async function gpuLoadMine() {
+    const serial = ++gpuMineSerial;
+    gpuMineMessage.textContent = 'Načítám rezervace…';
+    try {
+        const result = await gpuRequest('/api/reservations');
+        if (serial !== gpuMineSerial || gpuPanel.hidden) return;
+        if (!Array.isArray(result.reservations)) {
+            throw new Error('Neplatný seznam rezervací.');
+        }
+        gpuMineReservations = result.reservations;
+        gpuRefreshMineView();
+    } catch (error) {
+        if (serial !== gpuMineSerial || gpuPanel.hidden) return;
+        gpuMineReservations = [];
+        gpuMine.replaceChildren();
+        gpuMineMessage.textContent = 'Rezervace se nepodařilo načíst: ' + error.message;
+    }
+}
+
+async function gpuCancel(id, button) {
+    if (!window.confirm('Opravdu zrušit tuto rezervaci GPU?')) return;
+    button.disabled = true;
+    gpuMineMessage.textContent = 'Ruším rezervaci…';
+    try {
+        await gpuRequest('/api/reservations/' + id, {
+            method: 'DELETE', headers: {'X-AI-Platform-Action': 'reservation-cancel'},
+        });
+        await Promise.all([gpuLoadMine(), gpuLoadCalendar(), gpuUpdateAvailability()]);
+    } catch (error) {
+        button.disabled = false;
+        gpuMineMessage.textContent = 'Rezervaci se nepodařilo zrušit: ' + error.message;
+    }
+}
+
+async function gpuCreate(event) {
+    event.preventDefault();
+    const button = document.getElementById('gpu-create');
+    button.disabled = true;
+    gpuCreateMessage.textContent = 'Ověřuji termín…';
+    try {
+        const window = gpuSelectedWindow(true);
+        const count = Number(gpuCountInput.value);
+        if (![1, 2].includes(count)) throw new Error('Počet GPU musí být 1 nebo 2.');
+        const availability = await gpuRequest('/api/reservations/availability?' +
+            gpuIntervalQuery(window.start, window.end));
+        if (count > availability.available_gpus) {
+            throw new Error('V tomto intervalu není požadovaný počet GPU volný.');
+        }
+        gpuCreateMessage.textContent = 'Vytvářím rezervaci…';
+        await gpuRequest('/api/reservations', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-AI-Platform-Action': 'reservation-create',
+            },
+            body: JSON.stringify({
+                starts_at: window.start.toISOString(),
+                ends_at: window.end.toISOString(),
+                gpu_count: count,
+            }),
+        });
+        gpuCreateMessage.textContent = 'Rezervace byla vytvořena.';
+        gpuAnchor = new Date(window.start); // Show the booked interval in the calendar.
+        await Promise.all([gpuLoadCalendar(), gpuLoadMine(), gpuUpdateAvailability()]);
+    } catch (error) {
+        gpuCreateMessage.textContent = 'Rezervaci nelze vytvořit: ' + error.message;
+        gpuLoadCalendar(); // Capacity may have changed since the last view.
+        gpuUpdateAvailability();
+    } finally {
+        button.disabled = false;
+    }
+}
+
+function gpuOpenPanel() {
+    if (gpuPanel.hidden) {
+        gpuPanel.hidden = false;
+        document.body.classList.add('gpu-expanded');
+        gpuLoadCalendar();
+        gpuLoadMine();
+        gpuUpdateAvailability();
+        gpuRefreshTimer = setInterval(() => {
+            if (!gpuPanel.hidden) {
+                gpuLoadCalendar();
+                gpuLoadMine();
+                gpuUpdateAvailability();
+            }
+        }, 60000);
+    }
+    gpuPanel.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function gpuClosePanel() {
+    gpuPanel.hidden = true;
+    document.body.classList.remove('gpu-expanded');
+    clearInterval(gpuRefreshTimer);
+    clearTimeout(gpuAvailabilityTimer);
+    ++gpuCalendarSerial;
+    ++gpuAvailabilitySerial;
+    ++gpuMineSerial;
+    document.getElementById('gpu-open').focus();
+}
+
+// Set an initial interval rounded to the next half-hour in local time.
+const gpuDefaultStart = new Date(Math.ceil((Date.now() + 60000) /
+    GPU_HALF_HOUR) * GPU_HALF_HOUR);
+gpuStartInput.value = gpuLocalInput(gpuDefaultStart);
+gpuEndInput.value = gpuLocalInput(new Date(gpuDefaultStart.getTime() + GPU_HOUR));
+
+document.getElementById('gpu-open').addEventListener('click', gpuOpenPanel);
+document.getElementById('gpu-close').addEventListener('click', gpuClosePanel);
+document.getElementById('gpu-prev').addEventListener('click', () => gpuShiftWindow(-1));
+document.getElementById('gpu-next').addEventListener('click', () => gpuShiftWindow(1));
+document.getElementById('gpu-today').addEventListener('click', () => {
+    gpuAnchor = new Date();
+    gpuLoadCalendar();
+});
+document.getElementById('gpu-reload').addEventListener('click', () => {
+    gpuLoadCalendar();
+    gpuLoadMine();
+    gpuUpdateAvailability();
+});
+for (const button of document.querySelectorAll('[data-gpu-view]')) {
+    button.addEventListener('click', () => gpuSetView(button.dataset.gpuView));
+}
+for (const input of [gpuStartInput, gpuEndInput, gpuCountInput]) {
+    input.addEventListener('change', gpuQueueAvailability);
+}
+gpuMineFilter.addEventListener('change', gpuRefreshMineView);
+gpuForm.addEventListener('submit', gpuCreate);
 </script>
 
 </body>
