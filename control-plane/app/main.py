@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from psycopg.types.json import Jsonb
 
 from app.db import db_connect
+from app.gpu_admin import make_gpu_admin_router
 
 
 app = FastAPI(
@@ -228,7 +229,7 @@ def upsert_secret(
         )
 
 
-def host_agent_request(payload, timeout=120):
+def host_agent_request(payload, timeout=120, max_response_bytes=65536):
     with socket.socket(
         socket.AF_UNIX,
         socket.SOCK_STREAM,
@@ -256,7 +257,7 @@ def host_agent_request(payload, timeout=120):
 
             data += chunk
 
-            if len(data) > 65536:
+            if len(data) > max_response_bytes:
                 raise RuntimeError(
                     "host agent response too large"
                 )
@@ -344,6 +345,11 @@ def require_admin(request: Request, conn):
         )
 
     return identity
+
+
+app.include_router(make_gpu_admin_router(
+    db_connect, require_admin, host_agent_request, templates, csrf_token
+))
 
 
 @app.get("/health")

@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Platform – Správa GPU</title>
+    <style>
+        :root { color-scheme: light; }
+        body { font: 15px/1.5 system-ui, sans-serif; max-width: 1300px; margin: 30px auto; padding: 0 20px; color: #17202a; }
+        .admin-nav { display: flex; gap: 18px; margin: 0 0 28px; flex-wrap: wrap; }
+        .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 18px 0; }
+        button, select { padding: 8px 12px; font: inherit; }
+        button { cursor: pointer; }
+        button:disabled { cursor: not-allowed; opacity: .5; }
+        .notice { background: #eef5ff; border: 1px solid #cbdcf5; padding: 12px; margin: 16px 0; }
+        .error { background: #fff0ed; border-color: #f0c4bd; }
+        .table-wrap { overflow-x: auto; border: 1px solid #ddd; }
+        table { width: 100%; border-collapse: collapse; min-width: 900px; }
+        th, td { text-align: left; padding: 10px; border-bottom: 1px solid #e2e2e2; vertical-align: top; }
+        th { background: #f5f5f5; }
+        td:nth-child(2) { max-width: 400px; overflow-wrap: anywhere; }
+        .badge { display: inline-block; border-radius: 12px; padding: 2px 9px; font-size: 13px; background: #eee; }
+        .badge.new { background: #daf5df; }
+        .badge.registered { background: #dceeff; }
+        .badge.missing { background: #ffe5e1; }
+        .badge.retired { background: #f1e7ff; }
+        .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 20px 0; }
+        .panel { border: 1px solid #ddd; min-width: 0; padding: 16px; }
+        pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; font-size: 12px; background: #f5f5f5; padding: 12px; max-height: 540px; }
+        .subtle { color: #53606c; }
+        @media (max-width: 900px) { .columns { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<h1>Správa GPU</h1>
+{% include "_admin_nav.html" %}
+<p>Přihlášený uživatel: <strong>{{ identity.name or identity.login }}</strong></p>
+<p class="notice">Registraci GPU řídí administrátor. Nově nalezené karty se registrují jako <strong>zakázané</strong>. Povolení vyžaduje nové skenování. Zakázání nebo vyřazení nesmí snížit kapacitu pod již vytvořené rezervace. Shoda PCI adresy sama o sobě neprokazuje totožnost fyzické karty. Vyřazení zachová záznam a auditní historii; obnovení GPU automaticky nepovolí. Zařízení nalezené na PCI adrese vyřazené karty <strong>nemusí být původní karta</strong>. Původní záznam obnovuj pouze pro tutéž fyzickou kartu. Pro jinou kartu použij možnost <strong>Registrovat náhradu</strong>.</p>
+<input type="hidden" id="gpu-csrf" value="{{ gpu_csrf }}">
+<div class="controls">
+    <button id="scan-button" type="button">Skenovat GPU</button>
+    <label for="gpu-filter">Zobrazit</label>
+    <select id="gpu-filter">
+        <option value="all">Vše</option>
+        <option value="new">Nové</option>
+        <option value="registered">Registrované</option>
+        <option value="missing">Nenalezené</option>
+        <option value="retired">Vyřazené</option>
+    </select>
+    <button id="export-json" type="button" disabled>Stáhnout výsledek skenu (JSON)</button>
+</div>
+<p id="scan-status" role="status" aria-live="polite">Zatím neproběhlo skenování.</p>
+<div class="table-wrap">
+<table>
+    <thead><tr>
+        <th>Stav</th><th>Adaptér / model</th><th>Adresa PCI</th><th>Ovladač</th>
+        <th>PCIe max. / aktuální</th><th>DB: povolená / přítomná / vyřazená</th><th>Podrobnosti</th><th>Správa</th>
+    </tr></thead>
+    <tbody id="gpu-rows"></tbody>
+</table>
+</div>
+<div class="columns">
+    <section class="panel">
+        <h2>Podrobnosti o zařízení</h2>
+        <p id="detail-title" class="subtle">Vyber kartu pro zobrazení zjištěných a evidovaných údajů.</p>
+        <pre id="gpu-detail">Není vybráno žádné zařízení.</pre>
+    </section>
+    <section class="panel">
+        <h2>Diagnostika</h2>
+        <p class="subtle">Diagnostické příkazy omezuje host-agent. Některé nástroje nemusí být nainstalované.</p>
+        <div class="controls">
+            <label for="diag-tool">Nástroj</label>
+            <select id="diag-tool">
+                <option value="auto">Automaticky</option>
+                <option value="lspci">lspci</option>
+                <option value="nvidia-smi">nvidia-smi</option>
+                <option value="amd-smi">amd-smi</option>
+                <option value="rocm-smi">rocm-smi</option>
+                <option value="all">Všechny nástroje</option>
+            </select>
+            <button id="diagnose-button" type="button" disabled>Spustit diagnostiku</button>
+        </div>
+        <pre id="gpu-diagnostics">Vyber nalezené zařízení.</pre>
+    </section>
+</div>
+<script>
+'use strict';
+(() => {
+    const $ = id => document.getElementById(id);
+    const state = { inventory: null, selected: null };
+    const text = value => value === null || value === undefined || value === '' ? '-' : String(value);
+    const label = { new: 'Nová', registered: 'Registrovaná', missing: 'Nenalezená', retired: 'Vyřazená' };
+
+    // Na stránce GPU překládáme i odkazy ve sdíleném administrátorském menu.
+    // Ostatní stránky administrace tímto skriptem neměníme.
+    const navNames = { '/admin': 'Přehled', '/admin/users': 'Uživatelé',
+                       '/admin/config': 'Nastavení' };
+    for (const link of document.querySelectorAll('.admin-nav a')) {
+        const path = new URL(link.href, window.location.href).pathname;
+        if (Object.prototype.hasOwnProperty.call(navNames, path)) {
+            link.textContent = navNames[path];
+        }
+    }
+
+    const apiErrors = {
+        'Invalid GPU administration CSRF token': 'Neplatný bezpečnostní token. Obnov stránku a zkus to znovu.',
+        'Invalid PCI address': 'Neplatná PCI adresa.',
+        'Invalid PCI address or diagnostic tool': 'Neplatná PCI adresa nebo diagnostický nástroj.',
+        'The selected adapter is not currently detected': 'Vybrané zařízení nebylo při aktuálním skenu nalezeno.',
+        'Adapter already registered at this PCI address': 'Na této PCI adrese už je zaregistrované zařízení.',
+        'Retired GPU must be restored before enabling': 'Vyřazené GPU musíš před povolením nejprve obnovit.',
+        'GPU registration not found': 'Záznam GPU nebyl nalezen.',
+        'Registered GPU has no valid PCI address': 'Registrované GPU nemá platnou PCI adresu.',
+        'PCI slot belongs to another active GPU registration': 'PCI adresa už patří jinému aktivně registrovanému GPU.',
+        'GPU scanner did not supply a model name': 'Skener nevrátil název zařízení.',
+        'Duplicate PCI addresses returned by scanner': 'Skener vrátil duplicitní PCI adresy.',
+        'GPU host-agent is unavailable': 'Host-agent GPU není dostupný.',
+        'GPU host-agent operation failed': 'Operace host-agenta GPU selhala.',
+        'Invalid GPU inventory response': 'Neplatná odpověď inventarizace GPU.',
+        'Invalid GPU scan data': 'Neplatná data ze skeneru GPU.',
+        'Invalid GPU id': 'Neplatné ID GPU.',
+    };
+    function errorCS(message) {
+        if (typeof message !== 'string') return 'Neznámá chyba.';
+        const overbook = message.match(/^Reducing GPU capacity to (\d+) would overbook existing reservations requiring (\d+)$/);
+        if (overbook) {
+            return `Snížení kapacity na ${overbook[1]} GPU by narušilo existující rezervace vyžadující ${overbook[2]} GPU.`;
+        }
+        return apiErrors[message] || message;
+    }
+
+    function cell(row, content) {
+        const td = document.createElement('td');
+        if (content instanceof Node) td.appendChild(content);
+        else td.textContent = text(content);
+        row.appendChild(td);
+    }
+    function pcieSummary(device) {
+        const link = device && device.pcie;
+        if (!link) return '-';
+        const max = `${text(link.max_link_speed)} x${text(link.max_link_width)}`;
+        const current = `${text(link.current_link_speed)} x${text(link.current_link_width)}`;
+        return `${max} / ${current}`;
+    }
+    function selectDevice(item) {
+        state.selected = item;
+        const d = item.detected;
+        $('detail-title').textContent = d ? text(d.pci_bus_id) : text(item.registered && item.registered.pci_bus_id);
+        $('gpu-detail').textContent = JSON.stringify(item, null, 2);
+        $('gpu-diagnostics').textContent = d ? 'Vyber nástroj a spusť diagnostiku.' : 'Zařízení nebylo při aktuálním skenu nalezeno.';
+        $('diagnose-button').disabled = !d;
+    }
+    async function writeGPU(path, payload) {
+        const response = await fetch(path, {
+            method: 'POST',
+            cache: 'no-store',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-AI-Platform-CSRF': $('gpu-csrf').value,
+            },
+            body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
+        return result;
+    }
+    async function manageGPU(item, action) {
+        const d = item.detected;
+        const r = item.registered;
+        const pci = d ? d.pci_bus_id : (r && r.pci_bus_id);
+        const earlierRetired = action === 'register' && state.inventory &&
+            state.inventory.devices.some(entry => entry.scan_status === 'retired' &&
+                entry.registered && entry.registered.pci_bus_id &&
+                entry.registered.pci_bus_id.toLowerCase() === pci.toLowerCase());
+        const prompt = action === 'register' ?
+            (earlierRetired
+                ? `PCI adresu ${pci} už používala vyřazená karta. Registruj pouze JINOU fyzickou kartu; pokud jde o původní kartu, obnov její registraci. Registrovat novou kartu jako zakázanou?`
+                : `Registrovat kartu na adrese ${pci} jako zakázanou?`)
+            : action === 'enable' ? `Povolit GPU č. ${r.id} pro rezervace? Potvrď, že jde o správnou fyzickou kartu.`
+            : action === 'disable' ? `Zakázat GPU č. ${r.id}? Existující rezervace mohou operaci zablokovat.`
+            : action === 'retire' ? `Vyřadit GPU č. ${r.id}? Záznam zůstane v databázi, karta bude zakázaná. Existující rezervace mohou vyřazení zablokovat.`
+            : `Obnovit GPU č. ${r.id}? ${d ? 'Na stejné PCI adrese je nalezeno zařízení, ale NEMUSÍ jít o původní fyzickou kartu. Obnovuj POUZE, pokud je to tatáž karta. ' : ''}Po obnovení zůstane GPU zakázaná.`;
+        if (!window.confirm(prompt)) return;
+        $('scan-status').textContent = 'Aktualizuji evidenci GPU...';
+        try {
+            if (action === 'register') {
+                await writeGPU('/admin/gpus/register', {pci_bus_id: pci});
+            } else if (action === 'enable' || action === 'disable') {
+                await writeGPU(`/admin/gpus/${r.id}/enabled`, {enabled: action === 'enable'});
+            } else if (action === 'retire' || action === 'restore') {
+                await writeGPU(`/admin/gpus/${r.id}/retired`, {retired: action === 'retire'});
+            } else {
+                throw new Error('Nepodporovaná operace GPU.');
+            }
+            await scan();
+        } catch (error) {
+            $('scan-status').textContent = `Operace GPU se nezdařila: ${errorCS(error.message)}`;
+            $('scan-status').classList.add('error');
+        }
+    }
+    function managementCell(tr, item) {
+        const holder = document.createElement('div');
+        holder.style.display = 'flex';
+        holder.style.gap = '6px';
+        holder.style.flexWrap = 'wrap';
+        const d = item.detected;
+        const r = item.registered;
+        const actions = [];
+        if (!r && d) {
+            actions.push(['register', 'Registrovat (zakázanou)']);
+        } else if (r && r.retired_at) {
+            actions.push(['restore', 'Obnovit (zakázanou)']);
+            if (d) actions.push(['register', 'Registrovat náhradu']);
+        } else if (r) {
+            if (r.enabled) actions.push(['disable', 'Zakázat']);
+            else if (d) actions.push(['enable', 'Povolit']);
+            actions.push(['retire', 'Vyřadit']);
+        }
+        for (const [action, caption] of actions) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = caption;
+            button.addEventListener('click', () => manageGPU(item, action));
+            holder.appendChild(button);
+        }
+        if (!actions.length) holder.textContent = '-';
+        cell(tr, holder);
+    }
+    function render() {
+        const tbody = $('gpu-rows');
+        tbody.replaceChildren();
+        if (!state.inventory) return;
+        const chosen = $('gpu-filter').value;
+        const data = state.inventory.devices.filter(item =>
+            chosen === 'all' ||
+            (chosen === 'retired' ? Boolean(item.registered && item.registered.retired_at)
+                                  : item.scan_status === chosen)
+        );
+        if (!data.length) {
+            const row = document.createElement('tr');
+            const td = document.createElement('td');
+            td.colSpan = 8;
+            td.textContent = 'Filtru neodpovídají žádná zařízení.';
+            row.appendChild(td);
+            tbody.appendChild(row);
+            return;
+        }
+        for (const item of data) {
+            const detected = item.detected;
+            const registered = item.registered;
+            const tr = document.createElement('tr');
+            const badge = document.createElement('span');
+            badge.className = 'badge ' + item.scan_status;
+            badge.textContent = item.scan_status === 'retired' && detected
+                ? 'Vyřazená (zařízení na PCI zjištěno)' : (label[item.scan_status] || item.scan_status);
+            cell(tr, badge);
+            cell(tr, detected ? (detected.pci_name || detected.device_id) : registered.name);
+            cell(tr, detected ? detected.pci_bus_id : registered.pci_bus_id);
+            cell(tr, detected ? detected.driver_in_use || 'Bez připojeného ovladače' : '-');
+            cell(tr, pcieSummary(detected));
+            cell(tr, registered ? `${registered.enabled ? 'ano' : 'ne'} / ${registered.present ? 'ano' : 'ne'} / ${registered.retired_at ? 'VYŘAZENÁ' : 'aktivní'}` : '-');
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = 'Podrobnosti';
+            button.addEventListener('click', () => selectDevice(item));
+            cell(tr, button);
+            managementCell(tr, item);
+            tbody.appendChild(tr);
+        }
+    }
+    async function fetchJSON(url) {
+        const response = await fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json();
+    }
+    async function scan() {
+        $('scan-button').disabled = true;
+        $('scan-status').textContent = 'Probíhá skenování...';
+        $('scan-status').classList.remove('error');
+        try {
+            const result = await fetchJSON('/admin/gpus/inventory');
+            if (!Array.isArray(result.devices)) throw new Error('Neplatná odpověď skeneru.');
+            state.inventory = result;
+            state.selected = null;
+            $('gpu-detail').textContent = 'Není vybráno žádné zařízení.';
+            $('detail-title').textContent = 'Vyber kartu pro zobrazení zjištěných a evidovaných údajů.';
+            $('gpu-diagnostics').textContent = 'Vyber nalezené zařízení.';
+            $('diagnose-button').disabled = true;
+            $('export-json').disabled = false;
+            $('scan-status').textContent = `Hostitel: ${text(result.host)} | ${result.devices.length} záznamů | ${text(result.scanned_at)}`;
+            render();
+        } catch (error) {
+            $('scan-status').textContent = `Skenování GPU selhalo: ${errorCS(error.message)}`;
+            $('scan-status').classList.add('error');
+        } finally {
+            $('scan-button').disabled = false;
+        }
+    }
+    async function diagnose() {
+        const item = state.selected;
+        if (!item || !item.detected) return;
+        $('diagnose-button').disabled = true;
+        $('gpu-diagnostics').textContent = 'Probíhá diagnostika...';
+        try {
+            const params = new URLSearchParams({ pci_bus_id: item.detected.pci_bus_id, tool: $('diag-tool').value });
+            const result = await fetchJSON('/admin/gpus/diagnostics?' + params.toString());
+            const report = (result.results || []).map(entry => {
+                return [
+                    `${(entry.command || []).join(' ')} [stav: ${text(entry.status)}] [rozsah: ${text(entry.scope)}]`,
+                    entry.stdout || '',
+                    entry.stderr ? `stderr: ${entry.stderr}` : '',
+                ].filter(Boolean).join('\n');
+            }).join('\n\n---\n\n');
+            $('gpu-diagnostics').textContent = report || 'Diagnostika nevrátila žádný výstup.';
+        } catch (error) {
+            $('gpu-diagnostics').textContent = `Diagnostika se nezdařila: ${errorCS(error.message)}`;
+        } finally {
+            $('diagnose-button').disabled = false;
+        }
+    }
+    function exportJSON() {
+        if (!state.inventory) return;
+        const blob = new Blob([JSON.stringify(state.inventory, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'gpu-inventory.json';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    $('scan-button').addEventListener('click', scan);
+    $('gpu-filter').addEventListener('change', render);
+    $('diagnose-button').addEventListener('click', diagnose);
+    $('export-json').addEventListener('click', exportJSON);
+    scan();
+})();
+</script>
+</body>
+</html>
