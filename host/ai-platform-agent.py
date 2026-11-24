@@ -1689,8 +1689,40 @@ def validate_salamander_container(info, spec):
         raise RuntimeError("refusing to manage a container with different ownership")
 
 
-def workload_storage_preflight(spec):
-    user_id, connector_id, uid, gid, username = validated_salamander_spec(
+# COMFYUI_FSCRYPT_SCOPE_V1
+
+def workload_fscrypt_root_relevant(spec, er):
+    """Is an encrypted directory inside/above a directory this workload mounts?
+
+    ComfyUI only binds /data/apps/comfyui and /models/user. Any encrypted
+    model root is already rejected by validated_comfyui_spec. SalamanderRS
+    binds the whole data tree, so preserve its existing safety restriction.
+    Treat malformed paths and unexpected trees as relevant (fail closed).
+    """
+    if spec.get("application_code") != "comfyui":
+        return True
+    if er.get("tree") != "data":
+        return True
+
+    root_path = er.get("root_path")
+    if not isinstance(root_path, str) or not root_path.startswith("/"):
+        return True
+    if root_path == "/":
+        parts = ()
+    else:
+        components = root_path[1:].split("/")
+        if any(not item or item in (".", "..") or "\x00" in item
+               for item in components):
+            return True
+        parts = tuple(components)
+
+    workspace = ("apps", "comfyui")
+    # Both an encrypted ancestor and an encrypted descendant matter.
+    return (parts == workspace[:len(parts)] or
+            workspace == parts[:len(workspace)])
+
+def workload_storage_preflight(spec, *, validator=validated_salamander_spec):
+    user_id, connector_id, uid, gid, username = validator(
         spec, start=True
     )
 
@@ -1725,9 +1757,11 @@ def workload_storage_preflight(spec):
         if not user_mount_source_matches(status, mount["source_type"], source):
             raise RuntimeError(f"mount source mismatch: {mount['mount_path']}")
 
-    # Until lifecycle-aware locking is implemented, refuse to start while
-    # any configured fscrypt root is locked. Existing unlock API handles it.
+    # For SalamanderRS the entire data tree is mounted; every locked root
+    # matters. ComfyUI mounts only /apps/comfyui, not /private or other data.
     for er in spec.get("encryption_roots", []):
+        if not workload_fscrypt_root_relevant(spec, er):
+            continue
         status = user_encryption_status({
             "username": username,
             "tree": er["tree"],
@@ -1798,10 +1832,234 @@ def salamander_docker_args(spec, roots, connector_id, uid, gid):
     return args
 
 
+# COMFYUI_CPU_WORKLOAD_V1
+# CPU test profile only; GPU allocation and user-facing API follow separately.
+def validated_comfyui_spec(spec, *, start=False):
+    if spec.get("application_code") != "comfyui":
+        raise ValueError("not a ComfyUI workload")
+    if spec.get("mode") != "preparation":
+        raise ValueError("ComfyUI CPU test requires preparation mode")
+    if spec.get("reservation_id") is not None:
+        raise ValueError("CPU test must not claim a GPU reservation")
+    if spec.get("requires_reservation") is not False:
+        raise ValueError("CPU test must not require a reservation")
+    if spec.get("gpu_min") != 0 or spec.get("gpu_max") != 0:
+        raise ValueError("GPU not supported in this CPU test profile")
+    if spec.get("command") is not None:
+        raise ValueError("custom command not supported")
+    if spec.get("profile_name") != "cpu-test":
+        raise ValueError("unexpected ComfyUI profile")
+    if spec.get("image") != "ai-platform-comfyui:cpu-test":
+        raise ValueError("unexpected ComfyUI Docker image")
+    if spec.get("application_config") != {
+        "kind": "interactive-ai", "start_policy": "on_demand",
+        "single_instance_per_user": True, "cpu_only": True,
+        "workdir": "/workspace", "models_user": "/models/user",
+        "models_common": "/models/common", "models_common_read_only": True,
+    }:
+        raise ValueError("unexpected ComfyUI application configuration")
+    if spec.get("environment") != {
+        "HOME": "/workspace", "XDG_CACHE_HOME": "/workspace/.cache"
+    }:
+        raise ValueError("unexpected ComfyUI environment")
+    if spec.get("profile_config") != {
+        "cpu_pool": "interactive", "memory_swap_bytes": 17179869184,
+        "pids_limit": 256, "purpose": "integration-test",
+    }:
+        raise ValueError("unexpected ComfyUI resource profile")
+    if spec.get("memory_limit_bytes") != 17179869184:
+        raise ValueError("unexpected ComfyUI memory limit")
+    cpu = spec.get("cpu_limit")
+    if type(cpu) not in (float, int) or cpu != 4:
+        raise ValueError("unexpected ComfyUI CPU limit")
+    if spec.get("host_name") != load_config()["node"]["name"]:
+        raise ValueError("workload assigned to another host")
+    user_id = positive_int(spec.get("user_id"), "user_id")
+    connector_id = positive_int(spec.get("connector_id"), "connector_id")
+    uid = positive_int(spec.get("uid"), "uid", 20000, 59999)
+    gid = positive_int(spec.get("gid"), "gid", 20000, 59999)
+    username = spec.get("username")
+    if not isinstance(username, str) or not USERNAME_RE.fullmatch(username):
+        raise ValueError("invalid username")
+    if any(er.get("tree") == "models" for er in (spec.get("encryption_roots") or [])):
+        raise ValueError("encrypted user models not supported")
+    if start:
+        if not all(spec.get(key) is True for key in (
+            "user_enabled", "connector_enabled", "application_enabled", "profile_enabled"
+        )):
+            raise RuntimeError("user, connector or application is disabled")
+        if spec.get("provisioning_status") != "ready":
+            raise RuntimeError("user provisioning not ready")
+        if spec.get("connector_status") != "running":
+            raise RuntimeError("connector not marked running")
+    return user_id, connector_id, uid, gid, username
+
+
+def comfyui_container_name(spec):
+    return f"ai-comfy-{positive_int(spec.get('user_id'), 'user_id')}"
+
+
+def comfyui_container_validate(info, spec):
+    config = info.get("Config") or {}
+    labels = config.get("Labels") or {}
+    expected = {
+        "ai.platform.component": "comfyui",
+        "ai.platform.application": "comfyui",
+        "ai.platform.user_id": str(spec["user_id"]),
+        "ai.platform.connector_id": str(spec["connector_id"]),
+        "ai.platform.workload_id": str(spec["id"]),
+    }
+    if any(labels.get(k) != v for k, v in expected.items()):
+        raise RuntimeError("refusing to manage ComfyUI container with different ownership")
+    if config.get("Image") != spec["image"]:
+        raise RuntimeError("unexpected existing ComfyUI image")
+    if config.get("User") != f"{spec['uid']}:{spec['gid']}":
+        raise RuntimeError("unexpected existing ComfyUI UID/GID")
+
+
+def comfyui_prepare_workspace(roots, uid, gid):
+    # Keep traversal explicit: input/output/user/temp are siblings.
+    import stat
+    def ensure(path):
+        try:
+            path.mkdir(mode=0o700)
+            os.chown(path, uid, gid, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        s = path.lstat()
+        if not stat.S_ISDIR(s.st_mode) or s.st_uid != uid or s.st_gid != gid:
+            raise RuntimeError("ComfyUI work directory has wrong type or owner")
+        if stat.S_IMODE(s.st_mode) != 0o700:
+            raise RuntimeError("ComfyUI work directory must have 0700 permissions")
+    apps = roots["data"] / "apps"
+    workspace = apps / "comfyui"
+    ensure(apps)
+    ensure(workspace)
+    for folder in ("input", "output", "user", "temp"):
+        ensure(workspace / folder)
+    return workspace
+
+
+def comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid):
+    cfg = load_config()
+    models_root = Path(cfg["paths"]["models_root"])
+    common = models_root / "common"
+    if common.is_symlink() or not common.is_dir() or common.resolve() != common:
+        raise RuntimeError("common model directory missing or symlinked")
+    args = [
+        "docker", "run", "-d", "--name", comfyui_container_name(spec),
+        "--network", f"container:ai-ts-{connector_id}",
+        "--restart", "no", "--user", f"{uid}:{gid}",
+        "--cpus", "4", "--memory", "17179869184",
+        "--memory-swap", "17179869184", "--pids-limit", "256",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+    ]
+    for key, val in (
+        ("ai.platform.component", "comfyui"),
+        ("ai.platform.application", "comfyui"),
+        ("ai.platform.user_id", str(spec["user_id"])),
+        ("ai.platform.connector_id", str(connector_id)),
+        ("ai.platform.workload_id", str(spec["id"])),
+    ):
+        args.extend(["--label", f"{key}={val}"])
+    for source, target, ro in (
+        (workspace, "/workspace", False),
+        (roots["models"], "/models/user", False),
+        (common, "/models/common", True),
+    ):
+        mount = f"type=bind,src={source},dst={target}"
+        if ro:
+            mount += ",readonly"
+        args.extend(["--mount", mount])
+    for key, val in sorted(spec["environment"].items()):
+        args.extend(["-e", f"{key}={val}"])
+    args.extend([spec["image"], "python", "main.py", "--cpu",
+                 "--listen", "127.0.0.1", "--port", "8188",
+                 "--models-directory", "/models/user",
+                 "--user-directory", "/workspace/user",
+                 "--input-directory", "/workspace/input",
+                 "--output-directory", "/workspace/output",
+                 "--temp-directory", "/workspace/temp"])
+    return args
+
+
+def comfyui_workload_start(spec):
+    _, connector_id, uid, gid, _ = validated_comfyui_spec(spec, start=True)
+    roots = workload_storage_preflight(spec, validator=validated_comfyui_spec)
+    ts_info = inspect_container(f"ai-ts-{connector_id}")
+    if ts_info is None or not ts_info["State"]["Running"]:
+        raise RuntimeError("Tailscale connector not running")
+    status = tailscale_status(f"ai-ts-{connector_id}")
+    if not status or status.get("BackendState") != "Running":
+        raise RuntimeError("Tailscale connector not ready")
+    name = comfyui_container_name(spec)
+    run(["docker", "image", "inspect", spec["image"]])
+    existing = inspect_container(name)
+    if existing is not None:
+        comfyui_container_validate(existing, spec)
+        if existing["State"]["Running"]:
+            if existing["HostConfig"]["NetworkMode"] != "container:" + ts_info["Id"]:
+                raise RuntimeError("existing ComfyUI container is on wrong network")
+            helper_workload_command("workload-set-running", spec["id"])
+            return {"ok": True, "status": "running", "container": name, "existing": True}
+        run(["docker", "rm", name])
+    workspace = comfyui_prepare_workspace(roots, uid, gid)
+    args = comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid)
+    helper_workload_command("workload-set-starting", spec["id"])
+    try:
+        run(args, timeout=90)
+        if not container_running(name):
+            raise RuntimeError("ComfyUI exited immediately")
+        helper_workload_command("workload-set-running", spec["id"])
+    except Exception:
+        info = inspect_container(name)
+        if info is not None:
+            comfyui_container_validate(info, spec)
+            run(["docker", "rm", "-f", name], check=False)
+        helper_workload_command("workload-set-failed", spec["id"])
+        raise
+    return {"ok": True, "status": "running", "container": name, "existing": False}
+
+
+def comfyui_workload_status(spec):
+    validated_comfyui_spec(spec)
+    name = comfyui_container_name(spec)
+    info = inspect_container(name)
+    if info is None:
+        return {"ok": True, "status": "stopped", "container": name,
+                "database_status": spec["status"]}
+    comfyui_container_validate(info, spec)
+    return {"ok": True,
+            "status": "running" if info["State"]["Running"] else "stopped",
+            "container": name, "database_status": spec["status"]}
+
+
+def comfyui_workload_stop(spec):
+    validated_comfyui_spec(spec)
+    name = comfyui_container_name(spec)
+    info = inspect_container(name)
+    if info is None:
+        helper_workload_command("workload-set-stopped", spec["id"])
+        return {"ok": True, "status": "stopped", "existing": False}
+    comfyui_container_validate(info, spec)
+    helper_workload_command("workload-set-stopping", spec["id"])
+    try:
+        if info["State"]["Running"]:
+            run(["docker", "stop", "--time", "20", name], timeout=40)
+        run(["docker", "rm", name])
+        helper_workload_command("workload-set-stopped", spec["id"])
+    except Exception:
+        helper_workload_command("workload-set-failed", spec["id"])
+        raise
+    return {"ok": True, "status": "stopped", "existing": True}
+
+
 def workload_start(request):
     workload_id = positive_int(request.get("workload_id"), "workload_id")
     with WORKLOAD_LOCK:
         spec = load_workload(workload_id)
+        if spec.get("application_code") == "comfyui":
+            return comfyui_workload_start(spec)
         user_id, connector_id, uid, gid, username = validated_salamander_spec(
             spec, start=True
         )
@@ -1852,6 +2110,8 @@ def workload_start(request):
 def workload_status(request):
     workload_id = positive_int(request.get("workload_id"), "workload_id")
     spec = load_workload(workload_id)
+    if spec.get("application_code") == "comfyui":
+        return comfyui_workload_status(spec)
     validated_salamander_spec(spec)
     name = salamander_container_name(spec)
     info = inspect_container(name)
@@ -1868,6 +2128,8 @@ def workload_stop(request):
     workload_id = positive_int(request.get("workload_id"), "workload_id")
     with WORKLOAD_LOCK:
         spec = load_workload(workload_id)
+        if spec.get("application_code") == "comfyui":
+            return comfyui_workload_stop(spec)
         validated_salamander_spec(spec)
         name = salamander_container_name(spec)
         info = inspect_container(name)
@@ -1886,6 +2148,91 @@ def workload_stop(request):
             raise
         return {"ok": True, "status": "stopped", "existing": True}
 
+
+# WORKLOAD_STATE_SYNC_V1
+# Actual Docker state is authoritative; never restart workloads automatically.
+WORKLOAD_SYNC_INTERVAL_SECONDS = 30
+
+
+def workload_list_local():
+    """IDs for managed workloads on this host, provided by the trusted helper."""
+    output = run([WORKLOAD_HELPER, "workload-list-local"], timeout=30).stdout
+    ids = json.loads(output)
+    if not isinstance(ids, list) or len(ids) > 10000:
+        raise RuntimeError("invalid local workload list")
+    for workload_id in ids:
+        positive_int(workload_id, "workload_id")
+    if len(ids) != len(set(ids)):
+        raise RuntimeError("duplicate IDs in local workload list")
+    return ids
+
+
+def workload_reconcile_once():
+    """Reconcile one host without changing other hosts or starting containers.
+
+    Pending/failed workloads stay pending/failed unless their *validated*
+    container is really running.  If Docker or PostgreSQL is unavailable, do
+    not guess: keep existing DB state and retry on the next pass.
+    """
+    changed = 0
+    for workload_id in workload_list_local():
+        try:
+            # Serialize each check+DB update with local start/stop operations.
+            with WORKLOAD_LOCK:
+                spec = load_workload(workload_id)
+                app = spec.get("application_code")
+                if app == "salamander":
+                    validated_salamander_spec(spec)
+                    name = salamander_container_name(spec)
+                    validate = validate_salamander_container
+                elif app == "comfyui":
+                    validated_comfyui_spec(spec)
+                    name = comfyui_container_name(spec)
+                    validate = comfyui_container_validate
+                else:
+                    raise RuntimeError("unmanaged application")
+
+                info = inspect_container(name)
+                if info is not None:
+                    validate(info, spec)
+                    if info["State"]["Running"]:
+                        # Do not adopt a running container with a wrong image,
+                        # user or unexpected identity, even if labels match.
+                        config = info.get("Config") or {}
+                        if config.get("Image") != spec.get("image"):
+                            raise RuntimeError("unexpected running workload image")
+                        if config.get("User") != f"{spec['uid']}:{spec['gid']}":
+                            raise RuntimeError("unexpected running workload UID/GID")
+                        actual = "running"
+                    else:
+                        actual = "stopped"
+                else:
+                    actual = "stopped"
+
+                db_status = spec.get("status")
+                if actual == "running" and db_status != "running":
+                    helper_workload_command("workload-set-running", workload_id)
+                    changed += 1
+                    print(f"workload sync: {workload_id}: {db_status} -> running", flush=True)
+                elif actual == "stopped" and db_status in ("running", "starting", "stopping"):
+                    helper_workload_command("workload-set-stopped", workload_id)
+                    changed += 1
+                    print(f"workload sync: {workload_id}: {db_status} -> stopped", flush=True)
+        except Exception as exc:
+            # One bad workload must not block reconciliation for other users.
+            print(f"workload sync: {workload_id}: skipped: {exc}", flush=True)
+    return changed
+
+
+def workload_reconcile_loop(stop_event):
+    while not stop_event.is_set():
+        try:
+            workload_reconcile_once()
+        except Exception as exc:
+            # For example, PostgreSQL may not be ready just after power-on.
+            print(f"workload sync: pass failed: {exc}", flush=True)
+        if stop_event.wait(WORKLOAD_SYNC_INTERVAL_SECONDS):
+            return
 
 class AgentHandler(socketserver.StreamRequestHandler):
 
@@ -2125,7 +2472,18 @@ def main():
                 0o660,
             )
 
-            server.serve_forever()
+            stop_workload_sync = threading.Event()
+            workload_sync_thread = threading.Thread(
+                target=workload_reconcile_loop,
+                args=(stop_workload_sync,),
+                name="ai-platform-workload-sync",
+                daemon=True,
+            )
+            workload_sync_thread.start()
+            try:
+                server.serve_forever()
+            finally:
+                stop_workload_sync.set()
 
     finally:
         if path.exists():

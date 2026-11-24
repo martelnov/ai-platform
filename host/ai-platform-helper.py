@@ -125,6 +125,7 @@ def workload_describe(workload_id):
         SELECT json_build_object(
             'id', w.id,
             'mode', w.mode,
+            'reservation_id', w.reservation_id,
             'status', w.status,
             'host_name', h.name,
             'user_id', u.id,
@@ -191,41 +192,75 @@ def workload_describe(workload_id):
 
 
 def workload_set_status(workload_id, status):
-    """Record agent-confirmed lifecycle transitions, not desired state."""
-
+    """Record agent-confirmed lifecycle transitions for allowlisted apps."""
     if status not in ('starting', 'running', 'stopping', 'stopped', 'failed'):
         die('invalid workload status')
-
-    # Integer identifiers and the status allowlist prevent SQL interpolation.
-    container = psql(
+    # COMFYUI_CPU_WORKLOAD_V1: determine container name from application code.
+    # PostgreSQL enforces the profile/application relationship in the JOIN.
+    updated = psql(
         f"""
-        UPDATE workloads
+        UPDATE workloads AS w
         SET status = {sql_text(status)},
             container_name = CASE
                 WHEN {sql_text(status)} IN ('running', 'starting')
-                THEN 'ai-files-' || user_id::text
-                ELSE container_name
+                  THEN CASE
+                    WHEN a.code = 'salamander' THEN 'ai-files-' || w.user_id::text
+                    WHEN a.code = 'comfyui' THEN 'ai-comfy-' || w.user_id::text
+                    ELSE w.container_name
+                  END
+                ELSE w.container_name
             END,
             started_at = CASE
                 WHEN {sql_text(status)} = 'running'
-                THEN now() ELSE started_at END,
+                THEN now() ELSE w.started_at END,
             stopped_at = CASE
                 WHEN {sql_text(status)} IN ('stopped', 'failed')
-                THEN now() ELSE stopped_at END,
+                THEN now() ELSE w.stopped_at END,
             updated_at = now(),
             last_error = CASE
                 WHEN {sql_text(status)} = 'failed'
                 THEN 'host agent failed to start or stop workload'
                 ELSE NULL END
-        WHERE id = {workload_id}
-          AND mode = 'utility'
-        RETURNING id;
+        FROM application_profiles ap
+        JOIN applications a ON a.id = ap.application_id
+        WHERE w.id = {workload_id}
+          AND w.application_profile_id = ap.id
+          AND (
+              (w.mode = 'utility' AND a.code = 'salamander')
+              OR (w.mode = 'preparation' AND a.code = 'comfyui'
+                  AND ap.name = 'cpu-test' AND ap.gpu_min = 0 AND ap.gpu_max = 0)
+          )
+        RETURNING w.id;
         """
     )
-
-    if container.splitlines()[:1] != [str(workload_id)]:
+    if updated.splitlines()[:1] != [str(workload_id)]:
         die(f"cannot update workload {workload_id}")
 
+
+# WORKLOAD_STATE_SYNC_V1
+
+def workload_list_local():
+    """List managed workload IDs for precisely this configured host."""
+    cfg = load_config()
+    node = cfg.get("node", {}).get("name")
+    if not isinstance(node, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", node):
+        die("invalid node name")
+    result = psql(
+        f"""
+        SELECT COALESCE(json_agg(w.id ORDER BY w.id), '[]'::json)::text
+        FROM workloads w
+        JOIN hosts h ON h.id = w.host_id
+        JOIN application_profiles ap ON ap.id = w.application_profile_id
+        JOIN applications a ON a.id = ap.application_id
+        WHERE h.name = {sql_text(node)}
+          AND (
+            (a.code = 'salamander' AND w.mode = 'utility')
+            OR (a.code = 'comfyui' AND w.mode = 'preparation'
+                AND ap.name = 'cpu-test' AND ap.gpu_min = 0 AND ap.gpu_max = 0)
+          );
+        """
+    )
+    print(result or "[]")
 
 def check_mount(path):
     if not path.is_dir():
@@ -519,6 +554,10 @@ def quota_status(user_id):
 def main():
     if os.geteuid() != 0:
         die("must be run as root")
+
+    if len(sys.argv) == 2 and sys.argv[1] == "workload-list-local":
+        workload_list_local()
+        return
 
     if len(sys.argv) != 3:
         die(
