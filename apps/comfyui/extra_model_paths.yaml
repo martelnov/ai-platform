@@ -1,0 +1,17 @@
+# Shared, read-only model library. Personal models are loaded through
+# --models-directory /models/user and never exposed to other users.
+common_models:
+  base_path: /models/common
+  checkpoints: checkpoints
+  loras: loras
+  vae: vae
+  embeddings: embeddings
+  controlnet: controlnet
+  diffusion_models: diffusion_models
+  text_encoders: text_encoders
+  clip: clip
+  clip_vision: clip_vision
+  upscale_models: upscale_models
+  latent_upscale_models: latent_upscale_models
+  unet: unet
+  ipadapter: ipadapter
