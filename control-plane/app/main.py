@@ -17,6 +17,7 @@ from psycopg.types.json import Jsonb
 
 from app.db import db_connect
 from app.gpu_admin import make_gpu_admin_router
+from app.cpu_admin import make_cpu_admin_router
 
 
 app = FastAPI(
@@ -349,6 +350,10 @@ def require_admin(request: Request, conn):
 
 app.include_router(make_gpu_admin_router(
     db_connect, require_admin, host_agent_request, templates, csrf_token
+))
+
+app.include_router(make_cpu_admin_router(
+    db_connect, require_admin, host_agent_request, templates
 ))
 
 

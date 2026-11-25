@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Platform - CPU a RAM</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            margin: 24px;
+        }
+        table {
+            border-collapse: collapse;
+            margin: 16px 0;
+        }
+        th, td {
+            padding: 8px 16px;
+            border: 1px solid #ccc;
+            text-align: left;
+        }
+        th {
+            background: #eee;
+            color: #222;
+        }
+        button {
+            padding: 8px 16px;
+            cursor: pointer;
+        }
+        .error {
+            color: #c33;
+        }
+        nav a {
+            margin-right: 16px;
+        }
+    </style>
+</head>
+<body>
+
+{% include "_admin_nav.html" %}
+
+<h1>CPU a RAM</h1>
+
+<button id="refresh">Aktualizovat hardware</button>
+<p id="status" role="status"></p>
+
+<h2>Hardware hostitele</h2>
+
+<table>
+    <tbody id="summary"></tbody>
+</table>
+
+<h2>Topologie procesoru</h2>
+
+<table>
+    <thead>
+        <tr>
+            <th>Socket</th>
+            <th>Fyzické jádro</th>
+            <th>Logická CPU</th>
+            <th>NUMA</th>
+        </tr>
+    </thead>
+    <tbody id="topology"></tbody>
+</table>
+
+<script>
+const status = document.getElementById("status");
+const refresh = document.getElementById("refresh");
+
+function addRow(target, values) {
+    const row = document.createElement("tr");
+
+    for (const value of values) {
+        const cell = document.createElement("td");
+        cell.textContent = value ?? "-";
+        row.appendChild(cell);
+    }
+
+    target.appendChild(row);
+}
+
+function gib(bytes) {
+    return (bytes / 1073741824).toFixed(2) + " GiB";
+}
+
+async function loadInventory() {
+    refresh.disabled = true;
+    status.className = "";
+    status.textContent = "Načítám hardware...";
+
+    try {
+        const response = await fetch("/admin/cpu/inventory", {
+            cache: "no-store"
+        });
+
+        if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+        }
+
+        const data = await response.json();
+
+        const info = Object.fromEntries(
+            data.summary.map(item => [
+                item.field.replace(/:$/, ""),
+                item.data
+            ])
+        );
+
+        const groups = new Map();
+
+        for (const cpu of data.cpus) {
+            const key = `${cpu.socket}:${cpu.core}`;
+
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    socket: cpu.socket,
+                    core: cpu.core,
+                    node: cpu.node,
+                    cpus: []
+                });
+            }
+
+            groups.get(key).cpus.push(
+                cpu.online === false
+                    ? `${cpu.cpu} (offline)`
+                    : String(cpu.cpu)
+            );
+        }
+
+        const summary = document.getElementById("summary");
+        summary.replaceChildren();
+
+        const rows = [
+            ["Procesor", info["Model name"]],
+            ["Architektura", info["Architecture"]],
+            ["Počet socketů", info["Socket(s)"]],
+            ["Fyzická jádra", groups.size],
+            ["Logická CPU", data.cpus.length],
+            ["Online CPU", data.online_cpus],
+            ["SMT vláken na jádro", info["Thread(s) per core"]],
+            ["NUMA uzly", info["NUMA node(s)"]],
+            ["Celková RAM", gib(data.memory_total_bytes)],
+            ["Dostupná RAM", gib(data.memory_available_bytes)]
+        ];
+
+        for (const row of rows) {
+            addRow(summary, row);
+        }
+
+        const topology = document.getElementById("topology");
+        topology.replaceChildren();
+
+        for (const core of groups.values()) {
+            addRow(topology, [
+                core.socket,
+                core.core,
+                core.cpus.join(","),
+                core.node
+            ]);
+        }
+
+        status.textContent = "Hardware načten.";
+
+    } catch (error) {
+        status.className = "error";
+        status.textContent =
+            "Hardware se nepodařilo načíst: " + error.message;
+    } finally {
+        refresh.disabled = false;
+    }
+}
+
+refresh.addEventListener("click", loadInventory);
+loadInventory();
+</script>
+
+</body>
+</html>
