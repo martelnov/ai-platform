@@ -1875,19 +1875,37 @@ def validated_comfyui_spec(spec, *, start=False):
     if spec.get("application_code") != "comfyui":
         raise ValueError("not a ComfyUI workload")
     if spec.get("mode") != "preparation":
-        raise ValueError("ComfyUI CPU test requires preparation mode")
+        raise ValueError("ComfyUI CPU workload requires preparation mode")
     if spec.get("reservation_id") is not None:
-        raise ValueError("CPU test must not claim a GPU reservation")
+        raise ValueError("CPU workload must not claim a GPU reservation")
     if spec.get("requires_reservation") is not False:
-        raise ValueError("CPU test must not require a reservation")
+        raise ValueError("CPU workload must not require a reservation")
     if spec.get("gpu_min") != 0 or spec.get("gpu_max") != 0:
-        raise ValueError("GPU not supported in this CPU test profile")
+        raise ValueError("GPU not supported in CPU profiles")
     if spec.get("command") is not None:
         raise ValueError("custom command not supported")
-    if spec.get("profile_name") != "cpu-test":
-        raise ValueError("unexpected ComfyUI profile")
-    if spec.get("image") != "ai-platform-comfyui:cpu-test":
+
+    profile = spec.get("profile_name")
+    if profile == "cpu-test":
+        expected_image = "ai-platform-comfyui:cpu-test"
+        expected_profile_config = {
+            "cpu_pool": "interactive",
+            "memory_swap_bytes": 17179869184,
+            "pids_limit": 256,
+            "purpose": "integration-test",
+        }
+    elif profile == "cpu-prep":
+        expected_image = "ai-platform-comfyui:universal"
+        expected_profile_config = {
+            "pids_limit": 256,
+            "purpose": "preparation",
+        }
+    else:
+        raise ValueError("unsupported ComfyUI profile")
+
+    if spec.get("image") != expected_image:
         raise ValueError("unexpected ComfyUI Docker image")
+
     if spec.get("application_config") != {
         "kind": "interactive-ai", "start_policy": "on_demand",
         "single_instance_per_user": True, "cpu_only": True,
@@ -1895,41 +1913,62 @@ def validated_comfyui_spec(spec, *, start=False):
         "models_common": "/models/common", "models_common_read_only": True,
     }:
         raise ValueError("unexpected ComfyUI application configuration")
+
     if spec.get("environment") != {
         "HOME": "/workspace", "XDG_CACHE_HOME": "/workspace/.cache"
     }:
         raise ValueError("unexpected ComfyUI environment")
-    if spec.get("profile_config") != {
-        "cpu_pool": "interactive", "memory_swap_bytes": 17179869184,
-        "pids_limit": 256, "purpose": "integration-test",
-    }:
+
+    if spec.get("profile_config") != expected_profile_config:
         raise ValueError("unexpected ComfyUI resource profile")
-    if spec.get("memory_limit_bytes") != 17179869184:
-        raise ValueError("unexpected ComfyUI memory limit")
+
+    if type(spec.get("resource_override_enabled")) is not bool:
+        raise ValueError("invalid resource override state")
+
     cpu = spec.get("cpu_limit")
-    if type(cpu) not in (float, int) or cpu != 4:
-        raise ValueError("unexpected ComfyUI CPU limit")
+    if type(cpu) not in (int, float) or not (0 < cpu <= 256):
+        raise ValueError("invalid ComfyUI CPU limit")
+
+    positive_int(
+        spec.get("memory_limit_bytes"),
+        "memory_limit_bytes",
+        256 * 1024**2,
+    )
+
+    cpuset = spec.get("cpuset_cpus")
+    if cpuset is not None and not isinstance(cpuset, str):
+        raise ValueError("invalid ComfyUI CPU affinity")
+
     if spec.get("host_name") != load_config()["node"]["name"]:
         raise ValueError("workload assigned to another host")
+
     user_id = positive_int(spec.get("user_id"), "user_id")
     connector_id = positive_int(spec.get("connector_id"), "connector_id")
     uid = positive_int(spec.get("uid"), "uid", 20000, 59999)
     gid = positive_int(spec.get("gid"), "gid", 20000, 59999)
     username = spec.get("username")
+
     if not isinstance(username, str) or not USERNAME_RE.fullmatch(username):
         raise ValueError("invalid username")
-    if any(er.get("tree") == "models" for er in (spec.get("encryption_roots") or [])):
+
+    if any(er.get("tree") == "models"
+           for er in (spec.get("encryption_roots") or [])):
         raise ValueError("encrypted user models not supported")
+
     if start:
         if not all(spec.get(key) is True for key in (
-            "user_enabled", "connector_enabled", "application_enabled", "profile_enabled"
+            "user_enabled", "connector_enabled",
+            "application_enabled", "profile_enabled"
         )):
             raise RuntimeError("user, connector or application is disabled")
+
         if spec.get("provisioning_status") != "ready":
             raise RuntimeError("user provisioning not ready")
         if spec.get("connector_status") != "running":
             raise RuntimeError("connector not marked running")
+
     return user_id, connector_id, uid, gid, username
+
 
 
 def comfyui_container_name(spec):
@@ -2029,13 +2068,19 @@ def comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid):
         args.extend(["--mount", mount])
     for key, val in sorted(spec["environment"].items()):
         args.extend(["-e", f"{key}={val}"])
-    args.extend([spec["image"], "python", "main.py", "--cpu",
-                 "--listen", "127.0.0.1", "--port", "8188",
-                 "--models-directory", "/models/user",
-                 "--user-directory", "/workspace/user",
-                 "--input-directory", "/workspace/input",
-                 "--output-directory", "/workspace/output",
-                 "--temp-directory", "/workspace/temp"])
+    if spec["profile_name"] == "cpu-prep":
+        # Universal image uses its own ENTRYPOINT and directory configuration.
+        args.extend(["-e", "COMFYUI_MODE=cpu"])
+        args.append(spec["image"])
+    else:
+        # Preserve the existing cpu-test runtime unchanged.
+        args.extend([spec["image"], "python", "main.py", "--cpu",
+                     "--listen", "127.0.0.1", "--port", "8188",
+                     "--models-directory", "/models/user",
+                     "--user-directory", "/workspace/user",
+                     "--input-directory", "/workspace/input",
+                     "--output-directory", "/workspace/output",
+                     "--temp-directory", "/workspace/temp"])
     return args
 
 

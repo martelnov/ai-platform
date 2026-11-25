@@ -138,7 +138,11 @@ def workload_describe(workload_id):
             'connector_enabled', uc.enabled,
             'connector_status', uc.status,
             'application_code', a.code,
-            'image', a.image,
+            'image', CASE
+                WHEN a.code = 'comfyui' AND ap.name = 'cpu-prep'
+                    THEN 'ai-platform-comfyui:universal'
+                ELSE a.image
+            END,
             'application_enabled', a.enabled,
             'application_config', a.config,
             'profile_name', ap.name,
@@ -236,7 +240,7 @@ def workload_set_status(workload_id, status):
           AND (
               (w.mode = 'utility' AND a.code = 'salamander')
               OR (w.mode = 'preparation' AND a.code = 'comfyui'
-                  AND ap.name = 'cpu-test' AND ap.gpu_min = 0 AND ap.gpu_max = 0)
+                  AND ap.name IN ('cpu-test', 'cpu-prep') AND ap.gpu_min = 0 AND ap.gpu_max = 0)
           )
         RETURNING w.id;
         """
@@ -264,7 +268,7 @@ def workload_list_local():
           AND (
             (a.code = 'salamander' AND w.mode = 'utility')
             OR (a.code = 'comfyui' AND w.mode = 'preparation'
-                AND ap.name = 'cpu-test' AND ap.gpu_min = 0 AND ap.gpu_max = 0)
+                AND ap.name IN ('cpu-test', 'cpu-prep') AND ap.gpu_min = 0 AND ap.gpu_max = 0)
           );
         """
     )

@@ -21,6 +21,7 @@ def work():
         'provisioning_status': 'ready', 'connector_status': 'running',
         'application_code': 'comfyui', 'profile_name': 'cpu-test',
         'requires_reservation': False, 'gpu_min': 0, 'gpu_max': 0,
+        'resource_override_enabled': True,
         'command': None, 'image': 'ai-platform-comfyui:cpu-test',
         'application_config': {
             'kind': 'interactive-ai', 'start_policy': 'on_demand',
@@ -196,3 +197,56 @@ class ResourceAffinityTests(unittest.TestCase):
         with patch.object(Path, "read_text", return_value="0-31"):
             with self.assertRaisesRegex(ValueError, "unavailable"):
                 agent.docker_cpuset_args({"cpuset_cpus": "0-32"})
+
+
+class ComfyUniversalCpuTests(unittest.TestCase):
+    def prep_work(self):
+        spec = work()
+        spec.update({
+            "profile_name": "cpu-prep",
+            "image": "ai-platform-comfyui:universal",
+            "cpu_limit": 1.0,
+            "memory_limit_bytes": 4294967296,
+            "cpuset_cpus": "0,1,16,17",
+            "profile_config": {
+                "pids_limit": 256,
+                "purpose": "preparation",
+            },
+        })
+        return spec
+
+    @patch.object(agent, "load_config", return_value=CFG)
+    def test_cpu_prep_validation(self, _):
+        spec = self.prep_work()
+        result = agent.validated_comfyui_spec(spec, start=True)
+        self.assertEqual(result, (1, 1, 20000, 20000, "test"))
+
+    @patch.object(agent, "load_config", return_value=CFG)
+    def test_universal_image_uses_cpu_entrypoint(self, _):
+        spec = self.prep_work()
+        roots = {
+            "models": Path("/AI/models/users/test"),
+            "data": Path("/AI/data/users/test"),
+        }
+
+        with patch.object(Path, "is_dir", return_value=True), \
+             patch.object(Path, "is_symlink", return_value=False), \
+             patch.object(Path, "resolve",
+                          side_effect=lambda *a, **k: Path("/AI/models/common")), \
+             patch.object(Path, "read_text", return_value="0-31"):
+            args = agent.comfyui_docker_args(
+                spec, roots, roots["data"] / "apps/comfyui",
+                1, 20000, 20000
+            )
+
+        self.assertIn("ai-platform-comfyui:universal", args)
+        self.assertIn("COMFYUI_MODE=cpu", args)
+        self.assertEqual(args[args.index("--cpus") + 1], "1.0")
+        self.assertEqual(args[args.index("--memory") + 1], "4294967296")
+        self.assertEqual(args[args.index("--cpuset-cpus") + 1], "0,1,16,17")
+        self.assertEqual(
+            args[args.index("--memory-swap") + 1],
+            args[args.index("--memory") + 1],
+        )
+        self.assertNotIn("python", args)
+        self.assertNotIn("--cpu", args)
