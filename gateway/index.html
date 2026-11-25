@@ -419,7 +419,12 @@ body.gpu-expanded .services {
 
     <div class="service">
         <strong>ComfyUI</strong>
-        <small>Spouštění připravujeme</small>
+        <small id="comfyui-status" role="status">Zjišťuji stav…</small>
+        <div class="actions">
+            <button id="comfyui-start" disabled>Spustit</button>
+            <button id="comfyui-open" disabled>Otevřít</button>
+            <button id="comfyui-stop" disabled>Ukončit</button>
+        </div>
     </div>
 
     <div class="service">
@@ -547,6 +552,7 @@ fetch('/api/me', {cache: 'no-store'})
             'status'
         ).textContent = 'Připojeno';
         refreshSalamander();
+        refreshComfyUI();
         document.getElementById('gpu-open').disabled = false;
     })
     .catch(() => {
@@ -618,6 +624,91 @@ salamanderOpen.addEventListener('click', () => {
     }
 });
 
+
+
+// ComfyUI CPU preparation workload.
+const comfyuiStart = document.getElementById('comfyui-start');
+const comfyuiOpen = document.getElementById('comfyui-open');
+const comfyuiStop = document.getElementById('comfyui-stop');
+const comfyuiStatus = document.getElementById('comfyui-status');
+let comfyuiUrl = null;
+let comfyuiBusy = false;
+
+function updateComfyUI(data) {
+    const registered = data.registered === true;
+    const running = registered && data.status === 'running';
+
+    comfyuiUrl = running && typeof data.url === 'string'
+        ? data.url : null;
+
+    comfyuiStart.disabled = comfyuiBusy || running;
+    comfyuiOpen.disabled = comfyuiBusy || !running || !comfyuiUrl;
+    comfyuiStop.disabled = comfyuiBusy || !running;
+
+    comfyuiStatus.textContent = !registered
+        ? 'Aplikace zatím není přiřazena'
+        : running ? 'Spuštěno'
+        : data.status === 'stopped' ? 'Vypnuto'
+        : 'Stav: ' + data.status;
+}
+
+async function refreshComfyUI() {
+    try {
+        const response = await fetch('/api/comfyui', {
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            throw new Error('Nelze načíst stav ComfyUI');
+        }
+        updateComfyUI(await response.json());
+    } catch (error) {
+        comfyuiStart.disabled = true;
+        comfyuiOpen.disabled = true;
+        comfyuiStop.disabled = true;
+        comfyuiStatus.textContent = error.message;
+    }
+}
+
+async function changeComfyUI(action) {
+    comfyuiBusy = true;
+    comfyuiStart.disabled = true;
+    comfyuiOpen.disabled = true;
+    comfyuiStop.disabled = true;
+    comfyuiStatus.textContent =
+        action === 'start' ? 'Spouštím…' : 'Ukončuji…';
+
+    try {
+        const response = await fetch('/api/comfyui/' + action, {
+            method: 'POST',
+            headers: {'X-AI-Platform-Action': action},
+            cache: 'no-store'
+        });
+
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(
+                result.detail || result.error || 'Operace selhala'
+            );
+        }
+
+        comfyuiBusy = false;
+        updateComfyUI(result);
+    } catch (error) {
+        comfyuiBusy = false;
+        await refreshComfyUI();
+        comfyuiStatus.textContent = 'Chyba: ' + error.message;
+    }
+}
+
+comfyuiStart.addEventListener('click',
+    () => changeComfyUI('start'));
+comfyuiStop.addEventListener('click',
+    () => changeComfyUI('stop'));
+comfyuiOpen.addEventListener('click', () => {
+    if (comfyuiUrl && !comfyuiOpen.disabled) {
+        window.open(comfyuiUrl, '_blank', 'noopener,noreferrer');
+    }
+});
 
 // GPU reservations: only the server decides whether a booking can be created.
 const gpuPanel = document.getElementById('gpu-panel');

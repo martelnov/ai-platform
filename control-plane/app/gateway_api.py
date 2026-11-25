@@ -477,6 +477,97 @@ def gateway_me(request: Request):
     with db_connect() as conn:
         return resolve_connector_identity(conn, request)
 
+def ensure_comfyui_cpu_workload(conn, identity):
+    """Create or return the user's ComfyUI CPU preparation workload."""
+
+    user_id = identity["user"]["id"]
+    connector_id = identity["connector"]["id"]
+
+    with conn.cursor() as cur:
+        # Exactly one enabled compute host is supported in this first version.
+        cur.execute(
+            "SELECT id FROM hosts WHERE enabled = true ORDER BY id"
+        )
+        hosts = cur.fetchall()
+
+        if len(hosts) != 1:
+            raise HTTPException(
+                status_code=503,
+                detail="ComfyUI requires exactly one enabled compute host",
+            )
+
+        host_id = hosts[0][0]
+
+        cur.execute(
+            """
+            SELECT ap.id
+            FROM application_profiles ap
+            JOIN applications a ON a.id = ap.application_id
+            WHERE a.code = 'comfyui'
+              AND a.enabled = true
+              AND ap.name = 'cpu-prep'
+              AND ap.enabled = true
+              AND ap.requires_reservation = false
+              AND ap.gpu_min = 0
+              AND ap.gpu_max = 0
+            """
+        )
+        profile = cur.fetchone()
+
+        if not profile:
+            raise HTTPException(
+                status_code=409,
+                detail="ComfyUI CPU preparation profile is not enabled",
+            )
+
+        profile_id = profile[0]
+
+        # Serialize creation for this user/profile pair.
+        cur.execute(
+            """
+            SELECT pg_advisory_xact_lock(
+                hashtextextended(%s, 0)
+            )
+            """,
+            (f"comfyui-cpu:{user_id}:{profile_id}",),
+        )
+
+        cur.execute(
+            """
+            SELECT id
+            FROM workloads
+            WHERE user_id = %s
+              AND connector_id = %s
+              AND host_id = %s
+              AND application_profile_id = %s
+              AND mode = 'preparation'
+            FOR UPDATE
+            """,
+            (user_id, connector_id, host_id, profile_id),
+        )
+        existing = cur.fetchone()
+
+        if existing:
+            return existing[0]
+
+        cur.execute(
+            """
+            INSERT INTO workloads (
+                user_id,
+                host_id,
+                application_profile_id,
+                connector_id,
+                reservation_id,
+                mode,
+                status
+            )
+            VALUES (%s, %s, %s, %s, NULL, 'preparation', 'pending')
+            RETURNING id
+            """,
+            (user_id, host_id, profile_id, connector_id),
+        )
+
+        return cur.fetchone()[0]
 
 # User file manager: the browser never supplies a workload/user ID. The
 # connector identity is authenticated, then the associated workload is
@@ -564,3 +655,97 @@ def gateway_salamander_stop(request: Request):
     result = salamander_agent_call("workload_stop", workload_id)
     return {"registered": True, "status": result.get("status"),
             "url": salamander_url(identity)}
+
+# ComfyUI CPU preparation workload.
+
+def comfyui_workload_for(request: Request):
+    require_connector_auth(request)
+
+    with db_connect() as conn:
+        identity = resolve_connector_identity(conn, request)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT w.id
+                FROM workloads w
+                JOIN application_profiles p
+                  ON p.id = w.application_profile_id
+                JOIN applications a
+                  ON a.id = p.application_id
+                WHERE w.user_id = %s
+                  AND w.connector_id = %s
+                  AND w.mode = 'preparation'
+                  AND a.code = 'comfyui'
+                  AND p.name = 'cpu-prep'
+AND a.enabled = true
+AND p.enabled = true
+                """,
+                (identity["user"]["id"], identity["connector"]["id"]),
+            )
+            rows = cur.fetchall()
+
+    if len(rows) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Multiple ComfyUI CPU workloads configured",
+        )
+
+    return identity, (rows[0][0] if rows else None)
+
+
+@app.get("/v1/comfyui")
+def gateway_comfyui_status(request: Request):
+    identity, workload_id = comfyui_workload_for(request)
+
+    if workload_id is None:
+        return {
+            "registered": False,
+            "status": "unavailable",
+            "url": None,
+        }
+
+    result = salamander_agent_call("workload_status", workload_id)
+
+    if result.get("status") not in ("running", "stopped"):
+        raise HTTPException(503, detail="Unexpected ComfyUI state")
+
+    return {
+        "registered": True,
+        "status": result["status"],
+        "url": None,
+    }
+
+
+@app.post("/v1/comfyui/start")
+def gateway_comfyui_start(request: Request):
+    require_connector_auth(request)
+
+    with db_connect() as conn:
+        identity = resolve_connector_identity(conn, request)
+        workload_id = ensure_comfyui_cpu_workload(conn, identity)
+        conn.commit()
+
+    result = salamander_agent_call("workload_start", workload_id)
+
+    return {
+        "registered": True,
+        "status": result.get("status"),
+        "url": None,
+    }
+
+
+@app.post("/v1/comfyui/stop")
+def gateway_comfyui_stop(request: Request):
+    identity, workload_id = comfyui_workload_for(request)
+
+    if workload_id is None:
+        raise HTTPException(404, detail="ComfyUI workload not registered")
+
+    result = salamander_agent_call("workload_stop", workload_id)
+
+    return {
+        "registered": True,
+        "status": result.get("status"),
+        "url": None,
+    }

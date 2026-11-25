@@ -76,6 +76,33 @@ class Handler(BaseHTTPRequestHandler):
                                 "application/json")
         return self.respond(status, result, "application/json")
 
+    def comfyui_gateway_request(self, suffix="", method="GET"):
+        request = Request(
+            API_URL + "/v1/comfyui" + suffix,
+            headers={
+                "X-AI-Connector-ID": PROVIDER_ID,
+                "X-AI-Connector-Auth": AUTH_TOKEN,
+                "Accept": "application/json",
+            },
+            method=method,
+            data=b"" if method == "POST" else None,
+        )
+        try:
+            with urlopen(request, timeout=125) as upstream:
+                status = upstream.status
+                result = upstream.read(65537)
+        except HTTPError as exc:
+            status = exc.code
+            result = exc.read(65537)
+        except (URLError, TimeoutError, OSError) as exc:
+            self.log_error("ComfyUI Gateway unavailable: %s", exc)
+            return self.respond(503, b'{"error":"Gateway unavailable"}',
+                                "application/json")
+        if len(result) > 65536:
+            return self.respond(503, b'{"error":"Gateway response too large"}',
+                                "application/json")
+        return self.respond(status, result, "application/json")
+
     def reservation_gateway_request(self, suffix="", method="GET", *,
                                     query="", body=None):
         """Proxy an allowlisted reservation operation as this connector."""
@@ -152,17 +179,22 @@ class Handler(BaseHTTPRequestHandler):
 
         path = self.path.split("?", 1)[0]
         action = {
-            "/api/salamander/start": "start",
-            "/api/salamander/stop": "stop",
+            "/api/salamander/start": ("start", "salamander"),
+            "/api/salamander/stop": ("stop", "salamander"),
+            "/api/comfyui/start": ("start", "comfyui"),
+            "/api/comfyui/stop": ("stop", "comfyui"),
         }.get(path)
         if not action:
             return self.respond(404, b"not found\n", "text/plain; charset=utf-8")
         # Custom header prevents ordinary cross-site HTML form POSTs.
-        if (self.headers.get("X-AI-Platform-Action") != action
+        if (self.headers.get("X-AI-Platform-Action") != action[0]
                 or self.headers.get("Content-Length", "0") != "0"):
             return self.respond(403, b'{"error":"Invalid request"}',
                                 "application/json")
-        return self.salamander_gateway_request("/" + action, method="POST")
+        operation, application = action
+        proxy = (self.comfyui_gateway_request if application == "comfyui"
+                 else self.salamander_gateway_request)
+        return proxy("/" + operation, method="POST")
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -209,6 +241,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/salamander":
             return self.salamander_gateway_request()
+        if path == "/api/comfyui":
+            return self.comfyui_gateway_request()
 
         if path == "/api/me":
             request = Request(
