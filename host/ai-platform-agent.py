@@ -2234,6 +2234,48 @@ def workload_reconcile_loop(stop_event):
         if stop_event.wait(WORKLOAD_SYNC_INTERVAL_SECONDS):
             return
 
+
+def cpu_inventory_scan():
+    env = dict(os.environ, LC_ALL="C")
+
+    def lscpu(*args):
+        result = subprocess.run(
+            ["lscpu", *args],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+            env=env,
+        )
+        return json.loads(result.stdout)
+
+    summary = lscpu("--json")
+    topology = lscpu(
+        "--extended=CPU,SOCKET,CORE,NODE,ONLINE",
+        "--json",
+    )
+
+    memory = {}
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        key, _, value = line.partition(":")
+        if key in ("MemTotal", "MemAvailable"):
+            memory[key] = int(value.split()[0]) * 1024
+
+    return {
+        "ok": True,
+        "result": {
+            "schema_version": 1,
+            "summary": summary["lscpu"],
+            "cpus": topology["cpus"],
+            "online_cpus": Path(
+                "/sys/devices/system/cpu/online"
+            ).read_text().strip(),
+            "memory_total_bytes": memory["MemTotal"],
+            "memory_available_bytes": memory["MemAvailable"],
+        },
+    }
+
+
 class AgentHandler(socketserver.StreamRequestHandler):
 
     def send(self, data):
@@ -2267,6 +2309,10 @@ class AgentHandler(socketserver.StreamRequestHandler):
             if operation in ("gpu_inventory_scan", "gpu_diagnostics"):
                 from gpu_agent_bridge import gpu_agent_operation
                 self.send(gpu_agent_operation(request))
+                return
+
+            if operation == "cpu_inventory_scan":
+                self.send(cpu_inventory_scan())
                 return
 
             if operation == "workload_start":
