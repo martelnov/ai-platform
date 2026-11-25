@@ -1,0 +1,52 @@
+FROM python:3.12-slim-bookworm
+
+ARG COMFYUI_COMMIT=62879ac7f585be68f9423af242cbedbf95858b70
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HOME=/workspace \
+    XDG_CACHE_HOME=/workspace/.cache
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates git ffmpeg libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --filter=blob:none \
+      https://github.com/Comfy-Org/ComfyUI.git /opt/ComfyUI \
+ && git -C /opt/ComfyUI checkout --detach "$COMFYUI_COMMIT" \
+ && git -C /opt/ComfyUI rev-parse HEAD > /opt/comfyui.commit
+
+RUN python -m pip install --no-cache-dir \
+      'torch==2.15.0+cu132' \
+      'torchvision==0.29.1+cu132' \
+      'torchaudio==2.11.1+cu132' \
+      --index-url https://download.pytorch.org/whl/cu132
+
+RUN python -m pip install --no-cache-dir \
+      -r /opt/ComfyUI/requirements.txt \
+ && python -m pip check
+
+COPY extra_model_paths.yaml /opt/ComfyUI/extra_model_paths.yaml
+COPY run-universal.sh /usr/local/bin/run-universal
+
+RUN chmod 755 /usr/local/bin/run-universal \
+ && groupadd --gid 10001 comfy \
+ && useradd --uid 10001 --gid 10001 \
+      --create-home --shell /usr/sbin/nologin comfy \
+ && mkdir -p \
+      /workspace/user \
+      /workspace/input \
+      /workspace/output \
+      /workspace/temp \
+      /models/common \
+      /models/user \
+ && chown -R 10001:10001 /workspace /models/user
+
+USER 10001:10001
+WORKDIR /opt/ComfyUI
+
+EXPOSE 8188
+
+ENTRYPOINT ["/usr/local/bin/run-universal"]
