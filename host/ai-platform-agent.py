@@ -1773,6 +1773,41 @@ def workload_storage_preflight(spec, *, validator=validated_salamander_spec):
     return roots
 
 
+def docker_cpuset_args(spec):
+    value = spec.get("cpuset_cpus")
+    if value is None or value == "":
+        return []
+
+    import re
+
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*", value
+    ):
+        raise ValueError("invalid cpuset_cpus")
+
+    online_text = Path(
+        "/sys/devices/system/cpu/online"
+    ).read_text().strip()
+
+    online = set()
+    for part in online_text.split(","):
+        bounds = [int(x) for x in part.split("-")]
+        online.update(range(bounds[0], bounds[-1] + 1))
+
+    selected = set()
+    for part in value.split(","):
+        bounds = [int(x) for x in part.split("-")]
+        cpus = set(range(bounds[0], bounds[-1] + 1))
+        if selected.intersection(cpus):
+            raise ValueError("duplicate CPU in cpuset_cpus")
+        selected.update(cpus)
+
+    if not selected or not selected.issubset(online):
+        raise ValueError("cpuset_cpus contains unavailable CPUs")
+
+    return ["--cpuset-cpus", value]
+
+
 def salamander_docker_args(spec, roots, connector_id, uid, gid):
     env = spec.get("environment")
     expected_env = {
@@ -1813,6 +1848,8 @@ def salamander_docker_args(spec, roots, connector_id, uid, gid):
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges",
     ]
+    args.extend(docker_cpuset_args(spec))
+
     for key, value in (
         ("ai.platform.component", "file-manager"),
         ("ai.platform.application", "salamander"),
@@ -1946,14 +1983,33 @@ def comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid):
     common = models_root / "common"
     if common.is_symlink() or not common.is_dir() or common.resolve() != common:
         raise RuntimeError("common model directory missing or symlinked")
+    config = spec.get("profile_config") or {}
+    cpu = spec.get("cpu_limit")
+    if type(cpu) not in (int, float) or not (0 < cpu <= 256):
+        raise ValueError("invalid cpu_limit")
+
+    memory = positive_int(
+        spec.get("memory_limit_bytes"), "memory", 256 * 1024**2
+    )
+    swap = positive_int(
+        config.get("memory_swap_bytes", memory), "memory_swap_bytes"
+    )
+    if swap != memory:
+        raise ValueError("ComfyUI profiles must disable memory swap")
+
+    pids = positive_int(config.get("pids_limit", 256), "pids_limit", 16, 4096)
+
     args = [
         "docker", "run", "-d", "--name", comfyui_container_name(spec),
         "--network", f"container:ai-ts-{connector_id}",
         "--restart", "no", "--user", f"{uid}:{gid}",
-        "--cpus", "4", "--memory", "17179869184",
-        "--memory-swap", "17179869184", "--pids-limit", "256",
+        "--cpus", str(cpu),
+        "--memory", str(memory),
+        "--memory-swap", str(swap),
+        "--pids-limit", str(pids),
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     ]
+    args.extend(docker_cpuset_args(spec))
     for key, val in (
         ("ai.platform.component", "comfyui"),
         ("ai.platform.application", "comfyui"),

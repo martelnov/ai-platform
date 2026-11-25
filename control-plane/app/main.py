@@ -353,7 +353,7 @@ app.include_router(make_gpu_admin_router(
 ))
 
 app.include_router(make_cpu_admin_router(
-    db_connect, require_admin, host_agent_request, templates
+    db_connect, require_admin, host_agent_request, templates, csrf_token
 ))
 
 

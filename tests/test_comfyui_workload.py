@@ -165,3 +165,34 @@ class ComfyRuntimeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ResourceAffinityTests(unittest.TestCase):
+    def test_cpuset_is_passed_to_docker(self):
+        spec = work()
+        spec["cpuset_cpus"] = "0-1,16-17"
+        roots = {
+            "models": Path("/AI/models/users/test"),
+            "data": Path("/AI/data/users/test"),
+        }
+        with patch.object(agent, "load_config", return_value=CFG), \
+             patch.object(Path, "is_dir", return_value=True), \
+             patch.object(Path, "is_symlink", return_value=False), \
+             patch.object(Path, "resolve",
+                          side_effect=lambda *a, **k: Path("/AI/models/common")), \
+             patch.object(Path, "read_text", return_value="0-31"):
+            args = agent.comfyui_docker_args(
+                spec, roots, roots["data"] / "apps/comfyui",
+                1, 20000, 20000
+            )
+
+        self.assertEqual(args[args.index("--cpuset-cpus") + 1], "0-1,16-17")
+        self.assertEqual(args[args.index("--cpus") + 1], "4.0")
+        self.assertEqual(args[args.index("--memory") + 1], "17179869184")
+        self.assertEqual(args[args.index("--memory-swap") + 1],
+                         args[args.index("--memory") + 1])
+
+    def test_invalid_cpuset_is_rejected(self):
+        with patch.object(Path, "read_text", return_value="0-31"):
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                agent.docker_cpuset_args({"cpuset_cpus": "0-32"})

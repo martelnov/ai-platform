@@ -144,8 +144,13 @@ def workload_describe(workload_id):
             'profile_name', ap.name,
             'profile_enabled', ap.enabled,
             'requires_reservation', ap.requires_reservation,
-            'cpu_limit', ap.cpu_limit,
-            'memory_limit_bytes', ap.memory_limit_bytes,
+            'resource_override_enabled', COALESCE(hpr.enabled, false),
+            'cpu_limit', CASE WHEN hpr.enabled
+                THEN hpr.cpu_limit ELSE ap.cpu_limit END,
+            'memory_limit_bytes', CASE WHEN hpr.enabled
+                THEN hpr.memory_limit_bytes ELSE ap.memory_limit_bytes END,
+            'cpuset_cpus', CASE WHEN hpr.enabled
+                THEN hpr.cpuset_cpus ELSE NULL END,
             'gpu_min', ap.gpu_min,
             'gpu_max', ap.gpu_max,
             'command', ap.command,
@@ -180,6 +185,9 @@ def workload_describe(workload_id):
         JOIN user_connectors uc ON uc.id = w.connector_id
                             AND uc.user_id = u.id
         JOIN application_profiles ap ON ap.id = w.application_profile_id
+        LEFT JOIN host_application_profile_resources hpr
+          ON hpr.host_id = w.host_id
+         AND hpr.application_profile_id = ap.id
         JOIN applications a ON a.id = ap.application_id
         WHERE w.id = {workload_id};
         """

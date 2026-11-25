@@ -214,3 +214,26 @@ class WorkloadTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ResourceAffinityTests(unittest.TestCase):
+    @patch.object(agent, "load_config", return_value={"node": {"name": "ailab"}})
+    def test_cpuset_is_passed_to_docker(self, _):
+        spec = workload()
+        spec["cpuset_cpus"] = "0-1,16-17"
+
+        with patch.object(Path, "read_text", return_value="0-31"):
+            args = agent.salamander_docker_args(
+                spec,
+                {"data": Path("/AI/data/users/test"),
+                 "models": Path("/AI/models/users/test")},
+                1, 20000, 20000
+            )
+
+        self.assertEqual(args[args.index("--cpuset-cpus") + 1],
+                         "0-1,16-17")
+
+    def test_invalid_cpuset_is_rejected(self):
+        with patch.object(Path, "read_text", return_value="0-31"):
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                agent.docker_cpuset_args({"cpuset_cpus": "0-32"})

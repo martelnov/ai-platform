@@ -2,6 +2,7 @@
 <html lang="cs">
 <head>
     <meta charset="utf-8">
+    <meta name="csrf-token" content="{{ cpu_csrf }}">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Platform - CPU a RAM</title>
     <style>
@@ -33,6 +34,24 @@
             margin-right: 16px;
         }
     </style>
+
+    <style>
+        .resource-table input[type="text"] {
+            width: 130px;
+        }
+        .resource-table input[type="number"] {
+            width: 90px;
+        }
+        .resource-table td {
+            vertical-align: middle;
+        }
+        .profile-disabled {
+            opacity: 0.55;
+        }
+        .save-status {
+            margin-left: 8px;
+        }
+    </style>
 </head>
 <body>
 
@@ -62,6 +81,34 @@
     </thead>
     <tbody id="topology"></tbody>
 </table>
+
+
+<h2>Nastavení prostředků aplikací</h2>
+<p>
+    Zapnutím přepsání se použijí hodnoty nastavené pro tohoto hostitele.
+    Při vypnutí se použijí výchozí hodnoty aplikačního profilu.
+</p>
+
+<table class="resource-table">
+    <thead>
+        <tr>
+            <th>Aplikace</th>
+            <th>Profil</th>
+            <th>GPU</th>
+            <th>Aktivní profil</th>
+            <th>Přepsat</th>
+            <th>Povolená CPU</th>
+            <th>CPU limit</th>
+            <th>RAM (GiB)</th>
+            <th>Akce</th>
+        </tr>
+    </thead>
+    <tbody id="resource-profiles">
+        <tr><td colspan="9">Načítám profily...</td></tr>
+    </tbody>
+</table>
+
+<p id="resource-status" role="status"></p>
 
 <script>
 const status = document.getElementById("status");
@@ -172,6 +219,143 @@ async function loadInventory() {
 
 refresh.addEventListener("click", loadInventory);
 loadInventory();
+</script>
+
+
+<script>
+const resourceBody = document.getElementById("resource-profiles");
+const resourceStatus = document.getElementById("resource-status");
+const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+
+function resourceCell(row, value) {
+    const cell = document.createElement("td");
+    cell.textContent = value;
+    row.appendChild(cell);
+    return cell;
+}
+
+async function loadResources() {
+    resourceStatus.textContent = "Načítám aplikační profily...";
+    resourceBody.replaceChildren();
+
+    try {
+        const response = await fetch("/admin/cpu/resources", {
+            cache: "no-store"
+        });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+
+        const data = await response.json();
+
+        for (const profile of data.profiles) {
+            const row = document.createElement("tr");
+            if (!profile.profile_enabled) row.className = "profile-disabled";
+
+            resourceCell(row, profile.application_name || profile.application);
+            resourceCell(row, profile.profile);
+            resourceCell(row, profile.gpu_min + "-" + profile.gpu_max);
+            resourceCell(row, profile.profile_enabled ? "Ano" : "Ne");
+
+            const overrideCell = document.createElement("td");
+            const enabled = document.createElement("input");
+            enabled.type = "checkbox";
+            enabled.checked = profile.override_enabled;
+            enabled.setAttribute("aria-label", "Přepsat výchozí prostředky");
+            overrideCell.appendChild(enabled);
+            row.appendChild(overrideCell);
+
+            const cpusetCell = document.createElement("td");
+            const cpuset = document.createElement("input");
+            cpuset.type = "text";
+            cpuset.placeholder = "např. 0-3,8";
+            cpuset.value = profile.cpuset_cpus || "";
+            cpusetCell.appendChild(cpuset);
+            row.appendChild(cpusetCell);
+
+            const cpuCell = document.createElement("td");
+            const cpu = document.createElement("input");
+            cpu.type = "number";
+            cpu.min = "0.01";
+            cpu.max = "256";
+            cpu.step = "0.01";
+            cpu.value = profile.cpu_limit;
+            cpuCell.appendChild(cpu);
+            row.appendChild(cpuCell);
+
+            const ramCell = document.createElement("td");
+            const ram = document.createElement("input");
+            ram.type = "number";
+            ram.min = "0.25";
+            ram.step = "0.25";
+            ram.value = (
+                profile.memory_limit_bytes / 1073741824
+            ).toFixed(2);
+            ramCell.appendChild(ram);
+            row.appendChild(ramCell);
+
+            const actionCell = document.createElement("td");
+            const save = document.createElement("button");
+            save.textContent = "Uložit";
+            const result = document.createElement("span");
+            result.className = "save-status";
+            actionCell.append(save, result);
+            row.appendChild(actionCell);
+
+            save.addEventListener("click", async () => {
+                save.disabled = true;
+                result.textContent = "Ukládám...";
+
+                try {
+                    const confirmed = confirm(
+                        "Uložit prostředky profilu " + profile.profile + "?"
+                    );
+                    if (!confirmed) {
+                        result.textContent = "";
+                        return;
+                    }
+
+                    const response = await fetch(
+                        "/admin/cpu/resources/" + profile.profile_id,
+                        {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                "X-AI-Platform-CSRF": csrfToken
+                            },
+                            body: JSON.stringify({
+                                enabled: enabled.checked,
+                                cpuset_cpus: cpuset.value.trim(),
+                                cpu_limit: Number(cpu.value),
+                                memory_limit_gib: Number(ram.value)
+                            })
+                        }
+                    );
+
+                    const payload = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        throw new Error(payload.detail || "HTTP " + response.status);
+                    }
+
+                    result.textContent = "Uloženo";
+                    await loadResources();
+                } catch (error) {
+                    result.textContent = "Chyba: " + error.message;
+                } finally {
+                    save.disabled = false;
+                }
+            });
+
+            resourceBody.appendChild(row);
+        }
+
+        resourceStatus.textContent =
+            "Načteno " + data.profiles.length + " aplikačních profilů.";
+    } catch (error) {
+        resourceStatus.textContent =
+            "Nepodařilo se načíst profily: " + error.message;
+    }
+}
+
+loadResources();
 </script>
 
 </body>
