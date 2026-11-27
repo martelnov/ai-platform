@@ -1871,17 +1871,9 @@ def salamander_docker_args(spec, roots, connector_id, uid, gid):
 
 # COMFYUI_CPU_WORKLOAD_V1
 # CPU test profile only; GPU allocation and user-facing API follow separately.
-def validated_comfyui_spec(spec, *, start=False):
+def validated_comfyui_spec(spec, *, start=False, require_allocation=True):
     if spec.get("application_code") != "comfyui":
         raise ValueError("not a ComfyUI workload")
-    if spec.get("mode") != "preparation":
-        raise ValueError("ComfyUI CPU workload requires preparation mode")
-    if spec.get("reservation_id") is not None:
-        raise ValueError("CPU workload must not claim a GPU reservation")
-    if spec.get("requires_reservation") is not False:
-        raise ValueError("CPU workload must not require a reservation")
-    if spec.get("gpu_min") != 0 or spec.get("gpu_max") != 0:
-        raise ValueError("GPU not supported in CPU profiles")
     if spec.get("command") is not None:
         raise ValueError("custom command not supported")
 
@@ -1900,15 +1892,66 @@ def validated_comfyui_spec(spec, *, start=False):
             "pids_limit": 256,
             "purpose": "preparation",
         }
+    elif profile in ("gpu-1", "gpu-2"):
+        expected_image = "ai-platform-comfyui:universal"
+        expected_profile_config = {
+            "pids_limit": 256,
+            "purpose": "generation",
+        }
     else:
         raise ValueError("unsupported ComfyUI profile")
+
+    gpu_count = {
+        "cpu-test": 0,
+        "cpu-prep": 0,
+        "gpu-1": 1,
+        "gpu-2": 2,
+    }[profile]
+
+    expected_mode = "gpu" if gpu_count else "preparation"
+
+    if spec.get("mode") != expected_mode:
+        raise ValueError(f"ComfyUI workload requires {expected_mode} mode")
+
+    if spec.get("requires_reservation") is not bool(gpu_count):
+        raise ValueError("unexpected reservation requirement")
+
+    if (spec.get("gpu_min") != gpu_count
+            or spec.get("gpu_max") != gpu_count):
+        raise ValueError("unexpected GPU profile capacity")
+
+    allocated = spec.get("allocated_gpus", [])
+
+    if not isinstance(allocated, list):
+        raise ValueError("invalid GPU allocation")
+
+    if not gpu_count:
+        if spec.get("reservation_id") is not None or allocated:
+            raise ValueError("CPU workload must not claim a GPU reservation or allocation")
+    elif start:
+        reservation = spec.get("reservation")
+
+        if not isinstance(reservation, dict):
+            raise ValueError("GPU reservation missing")
+
+        if (
+            reservation.get("id") != spec.get("reservation_id")
+            or reservation.get("user_id") != spec.get("user_id")
+            or reservation.get("valid_now") is not True
+            or type(reservation.get("gpu_count")) is not int
+            or reservation["gpu_count"] < gpu_count
+        ):
+            raise ValueError("invalid GPU reservation")
+
+        if require_allocation:
+            comfyui_gpu_uuids(spec)
 
     if spec.get("image") != expected_image:
         raise ValueError("unexpected ComfyUI Docker image")
 
     if spec.get("application_config") != {
         "kind": "interactive-ai", "start_policy": "on_demand",
-        "single_instance_per_user": True, "cpu_only": True,
+        "single_instance_per_user": True,
         "workdir": "/workspace", "models_user": "/models/user",
         "models_common": "/models/common", "models_common_read_only": True,
     }:
@@ -1993,6 +2036,36 @@ def comfyui_container_validate(info, spec):
         raise RuntimeError("unexpected existing ComfyUI UID/GID")
 
 
+def comfyui_validate_container_gpus(info, spec):
+    """Verify Docker GPU device requests against the DB allocation."""
+
+    expected = set(comfyui_gpu_uuids(spec))
+    host_config = info.get("HostConfig") or {}
+    requests = host_config.get("DeviceRequests") or []
+
+    if len(requests) != 1:
+        raise RuntimeError("unexpected Docker GPU device requests")
+
+    request = requests[0]
+
+    if request.get("Driver") not in ("", "nvidia"):
+        raise RuntimeError("unexpected GPU driver")
+
+    if request.get("Count", 0) != 0:
+        raise RuntimeError("GPU allocation must use explicit UUIDs")
+
+    devices = request.get("DeviceIDs") or []
+
+    if len(devices) != len(expected) or set(devices) != expected:
+        raise RuntimeError("Docker GPU allocation differs from database")
+
+    if not any(
+        "gpu" in group
+        for group in (request.get("Capabilities") or [])
+    ):
+        raise RuntimeError("Docker GPU capability missing")
+
+
 def comfyui_prepare_workspace(roots, uid, gid):
     # Keep traversal explicit: input/output/user/temp are siblings.
     import stat
@@ -2016,6 +2089,48 @@ def comfyui_prepare_workspace(roots, uid, gid):
     return workspace
 
 
+def comfyui_gpu_uuids(spec):
+    count = {"gpu-1": 1, "gpu-2": 2}.get(spec.get("profile_name"))
+
+    if count is None:
+        raise ValueError("not a GPU profile")
+
+    allocated = spec.get("allocated_gpus")
+
+    if not isinstance(allocated, list) or len(allocated) != count:
+        raise ValueError("incorrect number of allocated GPUs")
+
+    host_id = positive_int(spec.get("host_id"), "host_id")
+    uuids = []
+
+    for gpu in allocated:
+        if not isinstance(gpu, dict):
+            raise ValueError("invalid allocated GPU")
+
+        if (
+            gpu.get("host_id") != host_id
+            or gpu.get("enabled") is not True
+            or gpu.get("present") is not True
+        ):
+            raise ValueError("allocated GPU unavailable on this host")
+
+        uuid = gpu.get("gpu_uuid")
+
+        if not isinstance(uuid, str) or not re.fullmatch(
+            r"GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            uuid
+        ):
+            raise ValueError("invalid NVIDIA GPU UUID")
+
+        uuids.append(uuid)
+
+    if len(set(uuids)) != count:
+        raise ValueError("duplicate allocated GPU")
+
+    return uuids
+
+
 def comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid):
     cfg = load_config()
     models_root = Path(cfg["paths"]["models_root"])
@@ -2030,11 +2145,7 @@ def comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid):
     memory = positive_int(
         spec.get("memory_limit_bytes"), "memory", 256 * 1024**2
     )
-    swap = positive_int(
-        config.get("memory_swap_bytes", memory), "memory_swap_bytes"
-    )
-    if swap != memory:
-        raise ValueError("ComfyUI profiles must disable memory swap")
+    swap = memory
 
     pids = positive_int(config.get("pids_limit", 256), "pids_limit", 16, 4096)
 
@@ -2068,7 +2179,12 @@ def comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid):
         args.extend(["--mount", mount])
     for key, val in sorted(spec["environment"].items()):
         args.extend(["-e", f"{key}={val}"])
-    if spec["profile_name"] == "cpu-prep":
+    if spec["profile_name"] in ("gpu-1", "gpu-2"):
+        uuids = comfyui_gpu_uuids(spec)
+        args.extend(["--gpus", '"device=' + ",".join(uuids) + '"'])
+        args.extend(["-e", "COMFYUI_MODE=gpu"])
+        args.append(spec["image"])
+    elif spec["profile_name"] == "cpu-prep":
         # Universal image uses its own ENTRYPOINT and directory configuration.
         args.extend(["-e", "COMFYUI_MODE=cpu"])
         args.append(spec["image"])
@@ -2085,7 +2201,10 @@ def comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid):
 
 
 def comfyui_workload_start(spec):
-    _, connector_id, uid, gid, _ = validated_comfyui_spec(spec, start=True)
+    gpu_mode = spec.get("mode") == "gpu"
+    _, connector_id, uid, gid, _ = validated_comfyui_spec(
+        spec, start=True, require_allocation=False
+    )
     roots = workload_storage_preflight(spec, validator=validated_comfyui_spec)
     ts_info = inspect_container(f"ai-ts-{connector_id}")
     if ts_info is None or not ts_info["State"]["Running"]:
@@ -2099,25 +2218,60 @@ def comfyui_workload_start(spec):
     if existing is not None:
         comfyui_container_validate(existing, spec)
         if existing["State"]["Running"]:
+            if gpu_mode:
+                validated_comfyui_spec(spec, start=True)
+                comfyui_validate_container_gpus(existing, spec)
             if existing["HostConfig"]["NetworkMode"] != "container:" + ts_info["Id"]:
                 raise RuntimeError("existing ComfyUI container is on wrong network")
             helper_workload_command("workload-set-running", spec["id"])
             return {"ok": True, "status": "running", "container": name, "existing": True}
         run(["docker", "rm", name])
     workspace = comfyui_prepare_workspace(roots, uid, gid)
-    args = comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid)
-    helper_workload_command("workload-set-starting", spec["id"])
+    workload_id = spec["id"]
+
+    if gpu_mode:
+        helper_workload_command("workload-allocate-gpus", workload_id)
+    else:
+        helper_workload_command("workload-set-starting", workload_id)
+
     try:
+        if gpu_mode:
+            spec = load_workload(workload_id)
+            validated_comfyui_spec(spec, start=True)
+
+        args = comfyui_docker_args(
+            spec, roots, workspace, connector_id, uid, gid
+        )
         run(args, timeout=90)
         if not container_running(name):
             raise RuntimeError("ComfyUI exited immediately")
+
+        if gpu_mode:
+            info = inspect_container(name)
+            if info is None:
+                raise RuntimeError("ComfyUI container disappeared")
+            comfyui_container_validate(info, spec)
+            comfyui_validate_container_gpus(info, spec)
+
         helper_workload_command("workload-set-running", spec["id"])
     except Exception:
         info = inspect_container(name)
         if info is not None:
             comfyui_container_validate(info, spec)
             run(["docker", "rm", "-f", name], check=False)
+
+        if gpu_mode and inspect_container(name) is not None:
+            raise RuntimeError(
+                "ComfyUI cleanup failed; GPU allocation retained"
+            )
+
         helper_workload_command("workload-set-failed", spec["id"])
+
+        if gpu_mode:
+            helper_workload_command(
+                "workload-release-gpus", spec["id"]
+            )
+
         raise
     return {"ok": True, "status": "running", "container": name, "existing": False}
 
@@ -2141,6 +2295,10 @@ def comfyui_workload_stop(spec):
     info = inspect_container(name)
     if info is None:
         helper_workload_command("workload-set-stopped", spec["id"])
+        if spec.get("mode") == "gpu":
+            helper_workload_command(
+                "workload-release-gpus", spec["id"]
+            )
         return {"ok": True, "status": "stopped", "existing": False}
     comfyui_container_validate(info, spec)
     helper_workload_command("workload-set-stopping", spec["id"])
@@ -2148,7 +2306,19 @@ def comfyui_workload_stop(spec):
         if info["State"]["Running"]:
             run(["docker", "stop", "--time", "20", name], timeout=40)
         run(["docker", "rm", name])
+
+        if spec.get("mode") == "gpu":
+            if inspect_container(name) is not None:
+                raise RuntimeError(
+                    "ComfyUI container still exists; GPUs retained"
+                )
+
         helper_workload_command("workload-set-stopped", spec["id"])
+
+        if spec.get("mode") == "gpu":
+            helper_workload_command(
+                "workload-release-gpus", spec["id"]
+            )
     except Exception:
         helper_workload_command("workload-set-failed", spec["id"])
         raise
@@ -2268,6 +2438,69 @@ def workload_list_local():
     return ids
 
 
+def reconcile_comfyui_gpu(spec, info):
+    """Reconcile GPU allocation and reservation under WORKLOAD_LOCK."""
+
+    workload_id = spec["id"]
+    name = comfyui_container_name(spec)
+    db_status = spec["status"]
+    allocated = spec.get("allocated_gpus") or []
+
+    running = (
+        info is not None
+        and info["State"]["Running"]
+    )
+
+    if running:
+        try:
+            validated_comfyui_spec(spec, start=True)
+            comfyui_validate_container_gpus(info, spec)
+        except (ValueError, RuntimeError) as exc:
+            print(
+                f"GPU workload {workload_id}: stopping: {exc}",
+                flush=True,
+            )
+            comfyui_workload_stop(spec)
+            return 1
+
+        if db_status != "running":
+            helper_workload_command(
+                "workload-set-running", workload_id
+            )
+            return 1
+
+        return 0
+
+    if allocated or db_status in (
+        "running", "starting", "stopping"
+    ):
+        if info is not None:
+            run(["docker", "rm", name])
+
+        if inspect_container(name) is not None:
+            raise RuntimeError(
+                "ComfyUI container still exists; GPUs retained"
+            )
+
+        if db_status not in ("stopped", "failed"):
+            helper_workload_command(
+                "workload-set-stopped", workload_id
+            )
+
+        if allocated:
+            helper_workload_command(
+                "workload-release-gpus", workload_id
+            )
+
+        print(
+            f"GPU workload {workload_id}: allocation reconciled",
+            flush=True,
+        )
+        return 1
+
+    return 0
+
+
 def workload_reconcile_once():
     """Reconcile one host without changing other hosts or starting containers.
 
@@ -2309,6 +2542,10 @@ def workload_reconcile_once():
                         actual = "stopped"
                 else:
                     actual = "stopped"
+
+                if app == "comfyui" and spec.get("mode") == "gpu":
+                    changed += reconcile_comfyui_gpu(spec, info)
+                    continue
 
                 db_status = spec.get("status")
                 if actual == "running" and db_status != "running":

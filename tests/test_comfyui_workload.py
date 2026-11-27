@@ -25,7 +25,7 @@ def work():
         'command': None, 'image': 'ai-platform-comfyui:cpu-test',
         'application_config': {
             'kind': 'interactive-ai', 'start_policy': 'on_demand',
-            'single_instance_per_user': True, 'cpu_only': True,
+            'single_instance_per_user': True,
             'workdir': '/workspace', 'models_user': '/models/user',
             'models_common': '/models/common', 'models_common_read_only': True,
         },

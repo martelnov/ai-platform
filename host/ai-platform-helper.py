@@ -126,8 +126,26 @@ def workload_describe(workload_id):
             'id', w.id,
             'mode', w.mode,
             'reservation_id', w.reservation_id,
+            'reservation', (
+                SELECT json_build_object(
+                    'id', r.id,
+                    'user_id', r.user_id,
+                    'gpu_count', r.gpu_count,
+                    'starts_at', r.starts_at,
+                    'ends_at', r.ends_at,
+                    'status', r.status,
+                    'valid_now', (
+                        r.starts_at <= now()
+                        AND r.ends_at > now()
+                        AND r.status IN ('scheduled', 'active')
+                    )
+                )
+                FROM reservations r
+                WHERE r.id = w.reservation_id
+            ),
             'status', w.status,
             'host_name', h.name,
+            'host_id', h.id,
             'user_id', u.id,
             'username', u.username,
             'uid', u.linux_uid,
@@ -139,7 +157,7 @@ def workload_describe(workload_id):
             'connector_status', uc.status,
             'application_code', a.code,
             'image', CASE
-                WHEN a.code = 'comfyui' AND ap.name = 'cpu-prep'
+                WHEN a.code = 'comfyui' AND ap.name IN ('cpu-prep', 'gpu-1', 'gpu-2')
                     THEN 'ai-platform-comfyui:universal'
                 ELSE a.image
             END,
@@ -157,6 +175,18 @@ def workload_describe(workload_id):
                 THEN hpr.cpuset_cpus ELSE NULL END,
             'gpu_min', ap.gpu_min,
             'gpu_max', ap.gpu_max,
+            'allocated_gpus', (
+                SELECT COALESCE(json_agg(json_build_object(
+                    'id', gd.id,
+                    'gpu_uuid', gd.gpu_uuid,
+                    'host_id', gd.host_id,
+                    'enabled', gd.enabled,
+                    'present', gd.present
+                ) ORDER BY gd.id), '[]'::json)
+                FROM workload_gpus wg
+                JOIN gpu_devices gd ON gd.id = wg.gpu_device_id
+                WHERE wg.workload_id = w.id
+            ),
             'command', ap.command,
             'environment', ap.environment,
             'profile_config', ap.config,
@@ -203,6 +233,211 @@ def workload_describe(workload_id):
     print(raw)
 
 
+def workload_allocate_gpus(workload_id):
+    """Allocate physical GPUs under the reservation transaction lock."""
+
+    workload_id = int(workload_id)
+    if workload_id <= 0:
+        die("invalid workload id")
+
+    node = load_config()["node"]["name"]
+
+    if not isinstance(node, str) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9-]{0,62}", node
+    ):
+        die("invalid node name")
+
+    psql(
+        f"""
+        BEGIN;
+
+        SELECT pg_advisory_xact_lock(104912, 1);
+
+        DO $allocation$
+        DECLARE
+            target RECORD;
+            requested integer;
+            allocated integer;
+            used_count integer;
+        BEGIN
+            SELECT
+                w.id,
+                w.host_id,
+                w.user_id,
+                w.status,
+                w.mode,
+                w.reservation_id,
+                ap.name AS profile_name,
+                ap.gpu_min,
+                ap.gpu_max,
+                ap.requires_reservation,
+                r.user_id AS reservation_user_id,
+                r.gpu_count AS reserved_count,
+                r.starts_at,
+                r.ends_at,
+                r.status AS reservation_status
+            INTO target
+            FROM workloads w
+            JOIN hosts h ON h.id = w.host_id
+            JOIN application_profiles ap
+                ON ap.id = w.application_profile_id
+            JOIN applications a ON a.id = ap.application_id
+            JOIN users u ON u.id = w.user_id
+            JOIN reservations r ON r.id = w.reservation_id
+            WHERE w.id = {workload_id}
+              AND h.name = {sql_text(node)}
+              AND a.code = 'comfyui'
+              AND a.enabled
+              AND ap.enabled
+              AND u.enabled
+            FOR UPDATE OF w, r;
+
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'GPU workload not available';
+            END IF;
+
+            IF target.mode <> 'gpu'
+               OR target.requires_reservation IS NOT TRUE
+               OR target.profile_name NOT IN ('gpu-1', 'gpu-2')
+            THEN
+                RAISE EXCEPTION 'Invalid GPU workload profile';
+            END IF;
+
+            requested := CASE target.profile_name
+                WHEN 'gpu-1' THEN 1
+                WHEN 'gpu-2' THEN 2
+            END;
+
+            IF target.gpu_min <> requested
+               OR target.gpu_max <> requested
+            THEN
+                RAISE EXCEPTION 'Invalid GPU profile capacity';
+            END IF;
+
+            IF target.status NOT IN ('pending', 'stopped', 'failed')
+            THEN
+                RAISE EXCEPTION 'Workload is not stopped';
+            END IF;
+
+            IF target.reservation_user_id <> target.user_id
+               OR target.reservation_status NOT IN ('scheduled', 'active')
+               OR target.starts_at > clock_timestamp()
+               OR target.ends_at <= clock_timestamp()
+            THEN
+                RAISE EXCEPTION 'GPU reservation is not valid';
+            END IF;
+
+            IF EXISTS (
+                SELECT 1 FROM workload_gpus
+                WHERE workload_id = target.id
+            ) THEN
+                RAISE EXCEPTION 'Workload already holds GPUs';
+            END IF;
+
+            SELECT count(*) INTO used_count
+            FROM workload_gpus wg
+            JOIN workloads w ON w.id = wg.workload_id
+            WHERE w.reservation_id = target.reservation_id;
+
+            IF used_count + requested > target.reserved_count THEN
+                RAISE EXCEPTION 'Reservation GPU capacity exceeded';
+            END IF;
+
+            INSERT INTO workload_gpus (
+                workload_id, gpu_device_id
+            )
+            SELECT target.id, gd.id
+            FROM gpu_devices gd
+            WHERE gd.host_id = target.host_id
+              AND gd.enabled = true
+              AND gd.present = true
+              AND gd.gpu_uuid ~
+                  '^GPU-[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{12}}$'
+              AND NOT EXISTS (
+                  SELECT 1 FROM workload_gpus wg
+                  WHERE wg.gpu_device_id = gd.id
+              )
+            ORDER BY gd.id
+            LIMIT requested;
+
+            GET DIAGNOSTICS allocated = ROW_COUNT;
+
+            IF allocated <> requested THEN
+                RAISE EXCEPTION 'Insufficient free GPUs on host';
+            END IF;
+
+            UPDATE workloads
+            SET status = 'starting',
+                updated_at = now(),
+                last_error = NULL
+            WHERE id = target.id;
+        END
+        $allocation$;
+
+        COMMIT;
+        """
+    )
+
+
+def workload_release_gpus(workload_id):
+    """Release GPUs after the agent has confirmed container termination."""
+
+    workload_id = int(workload_id)
+    if workload_id <= 0:
+        die("invalid workload id")
+
+    node = load_config()["node"]["name"]
+
+    if not isinstance(node, str) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9-]{0,62}", node
+    ):
+        die("invalid node name")
+
+    psql(
+        f"""
+        BEGIN;
+
+        SELECT pg_advisory_xact_lock(104912, 1);
+
+        DO $release$
+        DECLARE
+            target RECORD;
+        BEGIN
+            SELECT w.id, w.status, w.mode
+            INTO target
+            FROM workloads w
+            JOIN hosts h ON h.id = w.host_id
+            JOIN application_profiles ap
+                ON ap.id = w.application_profile_id
+            JOIN applications a ON a.id = ap.application_id
+            WHERE w.id = {workload_id}
+              AND h.name = {sql_text(node)}
+              AND a.code = 'comfyui'
+              AND ap.name IN ('gpu-1', 'gpu-2')
+            FOR UPDATE OF w;
+
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'GPU workload not found on this host';
+            END IF;
+
+            IF target.mode <> 'gpu' THEN
+                RAISE EXCEPTION 'Not a GPU workload';
+            END IF;
+
+            IF target.status NOT IN ('stopped', 'failed') THEN
+                RAISE EXCEPTION 'Cannot release GPUs from active workload';
+            END IF;
+
+            DELETE FROM workload_gpus
+            WHERE workload_id = target.id;
+        END
+        $release$;
+
+        COMMIT;
+        """
+    )
+
+
 def workload_set_status(workload_id, status):
     """Record agent-confirmed lifecycle transitions for allowlisted apps."""
     if status not in ('starting', 'running', 'stopping', 'stopped', 'failed'):
@@ -241,6 +476,13 @@ def workload_set_status(workload_id, status):
               (w.mode = 'utility' AND a.code = 'salamander')
               OR (w.mode = 'preparation' AND a.code = 'comfyui'
                   AND ap.name IN ('cpu-test', 'cpu-prep') AND ap.gpu_min = 0 AND ap.gpu_max = 0)
+              OR (w.mode = 'gpu' AND a.code = 'comfyui'
+                  AND ap.requires_reservation = true
+                  AND (
+                      (ap.name = 'gpu-1' AND ap.gpu_min = 1 AND ap.gpu_max = 1)
+                      OR
+                      (ap.name = 'gpu-2' AND ap.gpu_min = 2 AND ap.gpu_max = 2)
+                  ))
           )
         RETURNING w.id;
         """
@@ -269,6 +511,13 @@ def workload_list_local():
             (a.code = 'salamander' AND w.mode = 'utility')
             OR (a.code = 'comfyui' AND w.mode = 'preparation'
                 AND ap.name IN ('cpu-test', 'cpu-prep') AND ap.gpu_min = 0 AND ap.gpu_max = 0)
+              OR (w.mode = 'gpu' AND a.code = 'comfyui'
+                  AND ap.requires_reservation = true
+                  AND (
+                      (ap.name = 'gpu-1' AND ap.gpu_min = 1 AND ap.gpu_max = 1)
+                      OR
+                      (ap.name = 'gpu-2' AND ap.gpu_min = 2 AND ap.gpu_max = 2)
+                  ))
           );
         """
     )
@@ -590,6 +839,10 @@ def main():
 
     if command == "workload-describe":
         workload_describe(user_id)
+    elif command == "workload-allocate-gpus":
+        workload_allocate_gpus(user_id)
+    elif command == "workload-release-gpus":
+        workload_release_gpus(user_id)
     elif command == "workload-set-starting":
         workload_set_status(user_id, "starting")
     elif command == "workload-set-running":
