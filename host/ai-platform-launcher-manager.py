@@ -148,6 +148,33 @@ def ensure_salamander_serve(ts_name):
     print(f"{ts_name}: Salamander Serve configured")
 
 
+def ensure_comfyui_serve(ts_name):
+    """Configure a separate HTTPS port without replacing launcher Serve."""
+    result = run("docker", "exec", ts_name, "tailscale", "serve", "status", "--json")
+    config = json.loads(result.stdout.strip() or "{}") or {}
+    if not isinstance(config, dict):
+        raise RuntimeError("Unexpected Tailscale Serve configuration")
+    tcp = config.get("TCP") or {}
+    web = config.get("Web") or {}
+    if "8444" in tcp or any(
+        site.endswith(":8444") for site in web
+    ):
+        if not (tcp.get("8444") or {}).get("HTTPS"):
+            raise RuntimeError(f"{ts_name}: HTTPS 8444 already used for another service")
+        if not any(
+            site.endswith(":8444") and
+            (settings.get("Handlers") or {}).get("/", {}).get("Proxy")
+                == "http://127.0.0.1:8188"
+            for site, settings in web.items()
+            if isinstance(settings, dict)
+        ):
+            raise RuntimeError(f"{ts_name}: HTTPS 8444 has unexpected proxy")
+        return
+    run("docker", "exec", ts_name, "tailscale", "serve", "--bg",
+        "--https=8444", "http://127.0.0.1:8188")
+    print(f"{ts_name}: ComfyUI Serve configured")
+
+
 def ensure_launcher(connector_id):
     if connector_id <= 0:
         raise ValueError("Invalid connector ID")
@@ -230,6 +257,7 @@ def ensure_launcher(connector_id):
         ):
             ensure_tailscale_serve(ts_name)
             ensure_salamander_serve(ts_name)
+            ensure_comfyui_serve(ts_name)
 
             print(
                 f"{launcher_name}: already running"
@@ -266,6 +294,7 @@ def ensure_launcher(connector_id):
 
     ensure_tailscale_serve(ts_name)
     ensure_salamander_serve(ts_name)
+    ensure_comfyui_serve(ts_name)
     print(f"{launcher_name}: created")
 
 

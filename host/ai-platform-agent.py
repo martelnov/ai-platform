@@ -1870,7 +1870,7 @@ def salamander_docker_args(spec, roots, connector_id, uid, gid):
 
 
 # COMFYUI_CPU_WORKLOAD_V1
-# CPU test profile only; GPU allocation and user-facing API follow separately.
+# Universal image; profile selects CPU or GPU resources.
 def validated_comfyui_spec(spec, *, start=False, require_allocation=True):
     if spec.get("application_code") != "comfyui":
         raise ValueError("not a ComfyUI workload")
@@ -1878,15 +1878,7 @@ def validated_comfyui_spec(spec, *, start=False, require_allocation=True):
         raise ValueError("custom command not supported")
 
     profile = spec.get("profile_name")
-    if profile == "cpu-test":
-        expected_image = "ai-platform-comfyui:cpu-test"
-        expected_profile_config = {
-            "cpu_pool": "interactive",
-            "memory_swap_bytes": 17179869184,
-            "pids_limit": 256,
-            "purpose": "integration-test",
-        }
-    elif profile == "cpu-prep":
+    if profile == "cpu-prep":
         expected_image = "ai-platform-comfyui:universal"
         expected_profile_config = {
             "pids_limit": 256,
@@ -1902,7 +1894,6 @@ def validated_comfyui_spec(spec, *, start=False, require_allocation=True):
         raise ValueError("unsupported ComfyUI profile")
 
     gpu_count = {
-        "cpu-test": 0,
         "cpu-prep": 0,
         "gpu-1": 1,
         "gpu-2": 2,
@@ -2189,14 +2180,7 @@ def comfyui_docker_args(spec, roots, workspace, connector_id, uid, gid):
         args.extend(["-e", "COMFYUI_MODE=cpu"])
         args.append(spec["image"])
     else:
-        # Preserve the existing cpu-test runtime unchanged.
-        args.extend([spec["image"], "python", "main.py", "--cpu",
-                     "--listen", "127.0.0.1", "--port", "8188",
-                     "--models-directory", "/models/user",
-                     "--user-directory", "/workspace/user",
-                     "--input-directory", "/workspace/input",
-                     "--output-directory", "/workspace/output",
-                     "--temp-directory", "/workspace/temp"])
+        raise ValueError("unsupported ComfyUI profile")
     return args
 
 
@@ -2276,6 +2260,17 @@ def comfyui_workload_start(spec):
     return {"ok": True, "status": "running", "container": name, "existing": False}
 
 
+def comfyui_http_ready(name):
+    # Probe inside the validated container, not via the public proxy.
+    try:
+        result = run(["docker", "exec", name, "python", "-c",
+                      "import http.client; c=http.client.HTTPConnection('127.0.0.1',8188,timeout=2); c.request('GET','/'); r=c.getresponse(); raise SystemExit(0 if r.status == 200 else 1)"],
+                     check=False, timeout=5)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def comfyui_workload_status(spec):
     validated_comfyui_spec(spec)
     name = comfyui_container_name(spec)
@@ -2286,6 +2281,7 @@ def comfyui_workload_status(spec):
     comfyui_container_validate(info, spec)
     return {"ok": True,
             "status": "running" if info["State"]["Running"] else "stopped",
+            "ready": info["State"]["Running"] and comfyui_http_ready(name),
             "container": name, "database_status": spec["status"]}
 
 

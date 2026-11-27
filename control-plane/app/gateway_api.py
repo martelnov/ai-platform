@@ -522,33 +522,37 @@ def ensure_comfyui_cpu_workload(conn, identity):
 
         profile_id = profile[0]
 
-        # Serialize creation for this user/profile pair.
+        # Serialize creation across all ComfyUI profiles for this user.
         cur.execute(
             """
             SELECT pg_advisory_xact_lock(
                 hashtextextended(%s, 0)
             )
             """,
-            (f"comfyui-cpu:{user_id}:{profile_id}",),
+            (f"comfyui:{user_id}",),
         )
 
         cur.execute(
             """
-            SELECT id
-            FROM workloads
-            WHERE user_id = %s
-              AND connector_id = %s
-              AND host_id = %s
-              AND application_profile_id = %s
-              AND mode = 'preparation'
-            FOR UPDATE
+            SELECT w.id, w.application_profile_id, w.host_id, w.connector_id
+            FROM workloads w
+            JOIN application_profiles p ON p.id = w.application_profile_id
+            JOIN applications a ON a.id = p.application_id
+            WHERE w.user_id = %s AND a.code = 'comfyui'
+            FOR UPDATE OF w
             """,
-            (user_id, connector_id, host_id, profile_id),
+            (user_id,),
         )
-        existing = cur.fetchone()
-
-        if existing:
-            return existing[0]
+        rows = cur.fetchall()
+        if len(rows) > 1:
+            raise HTTPException(409, detail="Multiple ComfyUI workloads configured")
+        if rows:
+            workload_id, current_profile, current_host, current_connector = rows[0]
+            if current_host != host_id or current_connector != connector_id:
+                raise HTTPException(409, detail="ComfyUI assigned to another host or connector")
+            if current_profile != profile_id:
+                raise HTTPException(409, detail="ComfyUI has another profile; profile switching is not enabled yet")
+            return workload_id
 
         cur.execute(
             """
@@ -675,11 +679,7 @@ def comfyui_workload_for(request: Request):
                   ON a.id = p.application_id
                 WHERE w.user_id = %s
                   AND w.connector_id = %s
-                  AND w.mode = 'preparation'
                   AND a.code = 'comfyui'
-                  AND p.name = 'cpu-prep'
-AND a.enabled = true
-AND p.enabled = true
                 """,
                 (identity["user"]["id"], identity["connector"]["id"]),
             )
@@ -688,10 +688,15 @@ AND p.enabled = true
     if len(rows) > 1:
         raise HTTPException(
             status_code=409,
-            detail="Multiple ComfyUI CPU workloads configured",
+            detail="Multiple ComfyUI workloads configured",
         )
 
     return identity, (rows[0][0] if rows else None)
+
+
+def comfyui_url(identity):
+    url = salamander_url(identity)
+    return url.replace(":8443/", ":8444/") if url else None
 
 
 @app.get("/v1/comfyui")
@@ -713,7 +718,8 @@ def gateway_comfyui_status(request: Request):
     return {
         "registered": True,
         "status": result["status"],
-        "url": None,
+        "ready": result.get("ready") is True,
+        "url": comfyui_url(identity),
     }
 
 
@@ -731,7 +737,8 @@ def gateway_comfyui_start(request: Request):
     return {
         "registered": True,
         "status": result.get("status"),
-        "url": None,
+        "ready": False,
+        "url": comfyui_url(identity),
     }
 
 
@@ -747,5 +754,5 @@ def gateway_comfyui_stop(request: Request):
     return {
         "registered": True,
         "status": result.get("status"),
-        "url": None,
+        "url": comfyui_url(identity),
     }

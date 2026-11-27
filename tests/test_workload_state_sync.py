@@ -27,7 +27,7 @@ def workload(status='running', app='salamander'):
         'host_name': 'ailab', 'mode': 'utility' if app == 'salamander' else 'preparation',
         'requires_reservation': False, 'gpu_min': 0, 'gpu_max': 0,
         'command': None, 'application_code': app,
-        'image': 'ai-platform-salamander:0.10.0-e7dd497' if app == 'salamander' else 'ai-platform-comfyui:cpu-test',
+        'image': 'ai-platform-salamander:0.10.0-e7dd497' if app == 'salamander' else 'ai-platform-comfyui:universal',
         'status': status,
     }
 

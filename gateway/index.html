@@ -384,6 +384,22 @@ body.gpu-expanded .services {
     .gpu-bottom { grid-template-columns: 1fr; }
     .gpu-month-grid { min-width: 560px; }
 }
+.app-spinner {
+    display: inline-block;
+    width: 0.85em;
+    height: 0.85em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    vertical-align: middle;
+    margin-right: 0.4em;
+    animation: app-spin 0.8s linear infinite;
+}
+.app-spinner[hidden] { display: none; }
+@keyframes app-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    .app-spinner { animation: none; }
+}
 </style>
 
 </head>
@@ -419,7 +435,7 @@ body.gpu-expanded .services {
 
     <div class="service">
         <strong>ComfyUI</strong>
-        <small id="comfyui-status" role="status">Zjišťuji stav…</small>
+        <small role="status"><span id="comfyui-spinner" class="app-spinner" hidden aria-hidden="true"></span><span id="comfyui-status">Zjišťuji stav…</span></small>
         <div class="actions">
             <button id="comfyui-start" disabled>Spustit</button>
             <button id="comfyui-open" disabled>Otevřít</button>
@@ -553,6 +569,7 @@ fetch('/api/me', {cache: 'no-store'})
         ).textContent = 'Připojeno';
         refreshSalamander();
         refreshComfyUI();
+        setInterval(refreshComfyUI, 2000);
         document.getElementById('gpu-open').disabled = false;
     })
     .catch(() => {
@@ -633,26 +650,34 @@ const comfyuiStop = document.getElementById('comfyui-stop');
 const comfyuiStatus = document.getElementById('comfyui-status');
 let comfyuiUrl = null;
 let comfyuiBusy = false;
+let comfyuiRefreshing = false;
+let comfyuiRevision = 0;
+const comfyuiSpinner = document.getElementById('comfyui-spinner');
 
 function updateComfyUI(data) {
     const registered = data.registered === true;
     const running = registered && data.status === 'running';
 
-    comfyuiUrl = running && typeof data.url === 'string'
+    const ready = running && data.ready === true;
+    comfyuiSpinner.hidden = !(running && !ready);
+    comfyuiUrl = ready && typeof data.url === 'string'
         ? data.url : null;
 
     comfyuiStart.disabled = comfyuiBusy || running;
-    comfyuiOpen.disabled = comfyuiBusy || !running || !comfyuiUrl;
+    comfyuiOpen.disabled = comfyuiBusy || !ready || !comfyuiUrl;
     comfyuiStop.disabled = comfyuiBusy || !running;
 
     comfyuiStatus.textContent = !registered
         ? 'Aplikace zatím není přiřazena'
-        : running ? 'Spuštěno'
+        : running ? (ready ? 'Připraveno' : 'Spouštění ComfyUI…')
         : data.status === 'stopped' ? 'Vypnuto'
         : 'Stav: ' + data.status;
 }
 
 async function refreshComfyUI() {
+    if (comfyuiBusy || comfyuiRefreshing) return;
+    comfyuiRefreshing = true;
+    const revision = comfyuiRevision;
     try {
         const response = await fetch('/api/comfyui', {
             cache: 'no-store'
@@ -660,17 +685,25 @@ async function refreshComfyUI() {
         if (!response.ok) {
             throw new Error('Nelze načíst stav ComfyUI');
         }
-        updateComfyUI(await response.json());
+        const data = await response.json();
+        if (revision === comfyuiRevision && !comfyuiBusy) updateComfyUI(data);
     } catch (error) {
+        if (revision !== comfyuiRevision || comfyuiBusy) return;
+        comfyuiSpinner.hidden = true;
         comfyuiStart.disabled = true;
         comfyuiOpen.disabled = true;
         comfyuiStop.disabled = true;
         comfyuiStatus.textContent = error.message;
+    } finally {
+        comfyuiRefreshing = false;
     }
 }
 
 async function changeComfyUI(action) {
+    if (comfyuiBusy) return;
+    comfyuiRevision++;
     comfyuiBusy = true;
+    comfyuiSpinner.hidden = false;
     comfyuiStart.disabled = true;
     comfyuiOpen.disabled = true;
     comfyuiStop.disabled = true;
@@ -695,6 +728,7 @@ async function changeComfyUI(action) {
         updateComfyUI(result);
     } catch (error) {
         comfyuiBusy = false;
+        comfyuiSpinner.hidden = true;
         await refreshComfyUI();
         comfyuiStatus.textContent = 'Chyba: ' + error.message;
     }

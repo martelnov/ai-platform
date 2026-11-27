@@ -143,7 +143,7 @@ class ComfyUIWorkloadTests(unittest.TestCase):
         )
 
     def test_existing_workload_is_reused(self):
-        cursor = Cursor(existing=[(42,)])
+        cursor = Cursor(existing=[(42, 3, 1, 8)])
         conn = Connection(cursor)
 
         workload_id = gateway_api.ensure_comfyui_cpu_workload(
@@ -152,6 +152,31 @@ class ComfyUIWorkloadTests(unittest.TestCase):
 
         self.assertEqual(workload_id, 42)
         self.assertFalse(cursor.inserted)
+
+    def test_different_profile_does_not_create_second_workload(self):
+        cursor = Cursor(existing=[(42, 4, 1, 8)])
+        with self.assertRaises(HTTPException) as ctx:
+            gateway_api.ensure_comfyui_cpu_workload(Connection(cursor), IDENTITY)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertFalse(cursor.inserted)
+
+    def test_other_connector_cannot_take_existing_workload(self):
+        cursor = Cursor(existing=[(42, 3, 1, 9)])
+        with self.assertRaises(HTTPException) as ctx:
+            gateway_api.ensure_comfyui_cpu_workload(Connection(cursor), IDENTITY)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertFalse(cursor.inserted)
+
+    def test_duplicate_workloads_are_rejected(self):
+        cursor = Cursor(existing=[(42, 3, 1, 8), (43, 4, 1, 8)])
+        with self.assertRaises(HTTPException) as ctx:
+            gateway_api.ensure_comfyui_cpu_workload(Connection(cursor), IDENTITY)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertFalse(cursor.inserted)
+
+    def test_comfyui_url_uses_connector_dns(self):
+        self.assertEqual(gateway_api.comfyui_url({"connector": {"dns_name": "ai-test.example.ts.net"}}), "https://ai-test.example.ts.net:8444/")
+        self.assertIsNone(gateway_api.comfyui_url({"connector": {"dns_name": "evil.example.com"}}))
 
     def test_multiple_hosts_are_rejected(self):
         cursor = Cursor(hosts=[(1,), (2,)])
@@ -188,9 +213,10 @@ class ComfyUIEndpointTests(unittest.TestCase):
     @patch.object(gateway_api, "comfyui_workload_for")
     def test_status_returns_running(self, workload_for, agent):
         workload_for.return_value = (self.identity, 42)
-        agent.return_value = {"ok": True, "status": "running"}
+        agent.return_value = {"ok": True, "status": "running", "ready": True}
 
         result = gateway_api.gateway_comfyui_status(self.request)
+        self.assertIs(result["ready"], True)
 
         self.assertEqual(result["status"], "running")
         agent.assert_called_once_with("workload_status", 42)
@@ -207,6 +233,7 @@ class ComfyUIEndpointTests(unittest.TestCase):
         agent.return_value = {"ok": True, "status": "running"}
 
         result = gateway_api.gateway_comfyui_start(self.request)
+        self.assertIs(result["ready"], False)
 
         self.assertEqual(result["status"], "running")
         self.assertTrue(self.conn.committed)

@@ -51,6 +51,21 @@ class ServeTests(unittest.TestCase):
         self.assertIn('--https=8443', run.call_args.args)
         self.assertNotIn('off', run.call_args.args)
 
+    def test_comfyui_uses_distinct_port(self):
+        config = {'TCP': {'443': {'HTTPS': True}, '8443': {'HTTPS': True}}, 'Web': {}}
+        with patch.object(manager, 'run', return_value=SimpleNamespace(stdout=json.dumps(config))) as run:
+            manager.ensure_comfyui_serve('ai-ts-1')
+        self.assertEqual(run.call_count, 2)
+        self.assertIn('--https=8444', run.call_args.args)
+        self.assertIn('http://127.0.0.1:8188', run.call_args.args)
+
+    def test_comfyui_refuses_conflicting_port(self):
+        config = {'TCP': {'8444': {'HTTPS': True}}, 'Web': {'ai-test.ts.net:8444': {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:9999'}}}}}
+        with patch.object(manager, 'run', return_value=SimpleNamespace(stdout=json.dumps(config))) as run:
+            with self.assertRaisesRegex(RuntimeError, 'unexpected proxy'):
+                manager.ensure_comfyui_serve('ai-ts-1')
+        run.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

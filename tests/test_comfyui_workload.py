@@ -19,10 +19,10 @@ def work():
         'user_enabled': True, 'connector_enabled': True,
         'application_enabled': True, 'profile_enabled': True,
         'provisioning_status': 'ready', 'connector_status': 'running',
-        'application_code': 'comfyui', 'profile_name': 'cpu-test',
+        'application_code': 'comfyui', 'profile_name': 'cpu-prep',
         'requires_reservation': False, 'gpu_min': 0, 'gpu_max': 0,
         'resource_override_enabled': True,
-        'command': None, 'image': 'ai-platform-comfyui:cpu-test',
+        'command': None, 'image': 'ai-platform-comfyui:universal',
         'application_config': {
             'kind': 'interactive-ai', 'start_policy': 'on_demand',
             'single_instance_per_user': True,
@@ -30,9 +30,7 @@ def work():
             'models_common': '/models/common', 'models_common_read_only': True,
         },
         'environment': {'HOME': '/workspace', 'XDG_CACHE_HOME': '/workspace/.cache'},
-        'profile_config': {'cpu_pool': 'interactive',
-                           'memory_swap_bytes': 17179869184, 'pids_limit': 256,
-                           'purpose': 'integration-test'},
+        'profile_config': {'pids_limit': 256, 'purpose': 'preparation'},
         'memory_limit_bytes': 17179869184, 'cpu_limit': 4.0,
         'mounts': [], 'encryption_roots': [], 'status': 'pending',
     }
@@ -118,8 +116,9 @@ class ComfyRuntimeTests(unittest.TestCase):
         self.assertIn('src=/AI/models/common,dst=/models/common,readonly', joined)
         self.assertIn('src=/AI/models/users/test,dst=/models/user', joined)
         self.assertIn('src=/AI/data/users/test/apps/comfyui,dst=/workspace', joined)
-        self.assertIn('ai-platform-comfyui:cpu-test', args)
-        self.assertEqual(args[args.index('--listen') + 1], '127.0.0.1')
+        self.assertIn('ai-platform-comfyui:universal', args)
+        self.assertIn('COMFYUI_MODE=cpu', args)
+        self.assertEqual(args[-1], 'ai-platform-comfyui:universal')
         self.assertNotIn('--gpus', args)
 
     def test_container_wrong_owner_rejected(self):
@@ -135,6 +134,24 @@ class ComfyRuntimeTests(unittest.TestCase):
              patch.object(agent, 'inspect_container', return_value=None):
             out = agent.workload_status({'workload_id': 5})
         self.assertEqual(out['status'], 'stopped')
+
+    def test_running_container_readiness(self):
+        for ready in (False, True):
+            with patch.object(agent, 'load_config', return_value=CFG), \
+                 patch.object(agent, 'inspect_container', return_value={'State': {'Running': True}}), \
+                 patch.object(agent, 'comfyui_container_validate'), \
+                 patch.object(agent, 'comfyui_http_ready', return_value=ready):
+                out = agent.comfyui_workload_status(work())
+                self.assertEqual(out['status'], 'running')
+                self.assertIs(out['ready'], ready)
+
+    def test_http_probe_nonzero_and_timeout(self):
+        import subprocess
+        for code in (0, 1):
+            with patch.object(agent, 'run', return_value=SimpleNamespace(returncode=code)):
+                self.assertIs(agent.comfyui_http_ready('ai-comfy-1'), code == 0)
+        with patch.object(agent, 'run', side_effect=subprocess.TimeoutExpired('docker', 5)):
+            self.assertFalse(agent.comfyui_http_ready('ai-comfy-1'))
 
     def test_stop_missing_marks_db(self):
         with patch.object(agent, 'load_workload', return_value=work()), \
